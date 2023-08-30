@@ -1,0 +1,1439 @@
+#+OPTIONS: ':nil *:t -:t ::t <:t H:3 \n:nil ^:t arch:headline
+#+OPTIONS: author:t broken-links:nil c:nil creator:nil
+#+OPTIONS: d:(not "LOGBOOK") date:t e:t email:nil f:t inline:t num:t
+#+OPTIONS: p:nil pri:nil prop:nil stat:t tags:t tasks:t tex:t
+#+OPTIONS: timestamp:t title:t toc:t todo:t |:t
+#+TITLE: Analysis
+#+AUTHOR: Troels Græsholt-Knudsen
+#+LANGUAGE: en
+#+SELECT_TAGS: export
+#+EXCLUDE_TAGS: noexport
+#+CREATOR: Emacs 25.3.1 (Org mode 9.1.6)
+
+
+* Introduction
+This is the documentation for an analysis of a registry-based follow-up of cases seen at Aarhus University Hospital for evaluation of abuse. The dataset consists of children exposed to abuse and two control populations, one with children experiencing a divorce and one from the background population. The children are matched 1:3 in both populations.
+* Loading of data and variable generation
+#+begin_src R :session data :results silent :eval no-export
+  ##Get relevant libraries and load main dataset
+  library(haven) ##Import of data
+  library(data.table) ##The method used for all data treatment
+  library(MASS) ##To allow for negative binomial regression
+  setwd("d:/data/Workdata/706927/Arbejdsdata")
+  merged <- read_dta("ovgr_mfr_pop_merged_280618.dta")
+  ##head(merged)
+  ##str(merged)
+  ##View(merged)
+  merged <- data.table(merged)
+
+  ##Preserve the data and remove duplicates on 11 pnr's that are currently not unique:
+  ##Sort on pnr:
+  setkey(merged , pnr)
+  ##Mark duplicates
+  merged[duplicated(pnr) == TRUE , duplicates := 1]
+  ##Make a list with pnr with more than one entries
+  pnrDupl <- unlist(merged[duplicates == 1 , .(pnr)])
+  ##Using a separate file as this coding contains microdata. I first look at all records with one pnr from pnrDupl, then transfer all info on child abuse to the record not marked as a duplicate and then look at the data again to see if all numbers are copied in correctly. This is done with each of the duplicate pnrs. 
+  source("manualCleanupNOEXPORT.R")
+  ##View(merged[pnr %in% pnrDupl , .(pnr , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1 , duplicates)])
+  ##All data preserved; deleting the duplicates:
+  merged <- merged[is.na(duplicates) == TRUE]
+
+  ##There is a number of siblings in the dataset. These will be removed, retaining the one with the largest contribution of observation time. I calculate this in the timeSinceInclusion-variable, that is also adjusted for deaths (a rare event in this dataset). I will remove the observations after this variable is calculated. 
+
+  ##Define abuse variable, definitions are in the following section "Variable documentation".
+  ##If a new Indexdato is defined, the most sensible would be to delete all cases not 12 at their indexdate. I do this later when I have imported their birthdate.
+  phys <- 1
+  sexu <- 2
+  othe <- 3
+  mult <- 6
+  merged[ is.na(an_ovgr_art_1) == TRUE , tro_childabuse := 0]
+  merged[1:100 , .(tro_childabuse , an_ovgr_art_1)]
+  ##Behaves as expected
+  ##Get an overview of the codes used
+  merged[ , table(c(ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1))]
+  ##Assign tro_childabuse == phys to all observations with at least one instance of 10.*, and that instance is not 108.*(Munchausen's) or 109.* threat of death.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[like(as.character(get(i)) , "10.*") == TRUE & like(as.character(get(i)) , "108.*") != TRUE & like(as.character(get(i)) , "109.*") != TRUE , tro_childabuse := phys]
+  }
+  ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected
+  ##Assign mult to all observations that has been given tro_childabuse == phys and in which any variables contain something that is not NA or 10.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[tro_childabuse == phys & is.na(get(i)) != TRUE & like(as.character(get(i)) , "10.*") != TRUE , tro_childabuse := mult]
+  }
+  ##Assign mult to all observations that has been given tro_childabuse == phys and contains any variable with 108.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[tro_childabuse == phys & like(as.character(get(i)) , "108.*") == TRUE , tro_childabuse := mult]
+  }
+  ##Assign mult to all observations that has been given tro_childabuse == phys and contains any variable with 109.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[tro_childabuse == phys & like(as.character(get(i)) , "109.*") == TRUE , tro_childabuse := mult]
+  }
+
+  ##View(merged[tro_childabuse == 6 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##View(merged[like(as.character(ovgr_art_1_1) , "108.*") | like(as.character(ovgr_art_2_1) , "108.*") | like(as.character(ovgr_art_3_1) , "108.*") | like(as.character(ovgr_art_4_1) , "108.*") | like(as.character(ovgr_art_5_1) , "108.*") | like(as.character(ovgr_art_6_1) , "108.*") | like(as.character(ovgr_art_7_1) , "108.*") | like(as.character(ovgr_art_8_1) , "108.*") , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##View(merged[like(as.character(ovgr_art_1_1) , "109.*") | like(as.character(ovgr_art_2_1) , "109.*") | like(as.character(ovgr_art_3_1) , "109.*") | like(as.character(ovgr_art_4_1) , "109.*") | like(as.character(ovgr_art_5_1) , "109.*") | like(as.character(ovgr_art_6_1) , "109.*") | like(as.character(ovgr_art_7_1) , "109.*") | like(as.character(ovgr_art_8_1) , "109.*") , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected
+
+  ##From the overview of codes used, we know that there are no occurrences of 2100 or 2110 - thus, all codes with 20.* defines sexual abuse, and no need for special considerations.  
+  ##Assign tro_childabuse == sexu to all observations with at least one instance of 20.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[like(as.character(get(i)) , "20.*") == TRUE , tro_childabuse := sexu]
+  }
+  ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected; some mult-values are overwritten, correcting that in next loop.
+  ##Assign mult to all observations that has been given tro_childabuse == sexu and in which any variables contain something that is not NA or 20.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[tro_childabuse == sexu & is.na(get(i)) != TRUE & like(as.character(get(i)) , "20.*") != TRUE , tro_childabuse := mult]
+  }
+  ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected; introduced errors from previous step are also corrected.
+  ##As a table of the used codes reveals very few entries with 30.* and 40.*, these are both categorised as "other".
+  ##Assign tro_childabuse == othe to all observations with at least one instance of 30.* or 40.* or 108.* (Munchhausen) or 109.*(threat of death) .
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[like(as.character(get(i)) , "30.*") == TRUE | like(as.character(get(i)) , "40.*") == TRUE | like(as.character(get(i)) , "108.*") == TRUE | like(as.character(get(i)) , "109.*") == TRUE, tro_childabuse := othe]
+  }
+  ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##View(merged[tro_childabuse == 3 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected; overwritten some previous mult-values, will correct in next step.
+  ##Assign mult to all observations that has been given tro_childabuse == othe and in which any variables contain something that is not NA or 30.* or 40.*.
+  for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
+      merged[tro_childabuse == othe & is.na(get(i)) != TRUE & like(as.character(get(i)) , "30.*") != TRUE & like(as.character(get(i)) , "40.*") != TRUE & like(as.character(get(i)) , "108.*") != TRUE & like(as.character(get(i)) , "109.*") != TRUE , tro_childabuse := mult]
+  }
+  ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##View(merged[tro_childabuse == mult , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##View(merged[tro_childabuse == othe , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
+  ##Behaves as expected. Checking new variable:
+  ##merged[ , table(tro_childabuse , useNA = "always")]
+  ##385 have experienced abuse, 2232 have not. Noone has missing values - however, this implies that the coding in the original dataset was complete.
+
+  ##Define age at inclusion, time since inclusion variables, sex  and age groups
+
+  ##View(merged)
+  #setorder(merged, Indexdato)
+  #merged[ , duplicated := duplicated(pnr)]
+  ##barn_foed_1 only have birthdates from cases. I need for all and these data exist in t_person_total.
+  personinf <- read_dta("d:/data/Workdata/706927/Eksterne data/t_person_total.dta")
+  personinf <- data.table(personinf)
+  birthSex <- personinf[ , .(pnr , D_FODDATO , C_KON)]
+  ##Doing a merge, keeping all records in merged and importing from a subset of t_person_total
+  setkey(merged, pnr)
+  setkey(birthSex, pnr)
+  merged <- merge(merged , birthSex , all.x = TRUE)
+  ##View(merged[ , .(pnr , barn_foed_1 , D_FODDATO)])
+  ##merged[ , table(is.na(D_FODDATO))]
+  ##barn_foed_1 matches D_FODDATO and there are no missing values.  
+  merged[ , ageAtInclusion := difftime(Indexdato, D_FODDATO , units = "days")/365.24]
+  ##365.24 is the length of a year in days, including years with 366 days.
+  ##Removing the days-attribute - it's measured in years
+  merged[ , ageAtInclusion := as.numeric(ageAtInclusion)]
+  ##merged[ , str(ageAtInclusion)]
+  ##merged[ , table(is.na(ageAtInclusion))]
+  ##View(merged[ , .(Indexdato , D_FODDATO , ageAtInclusion)])
+  ##No missing values, expected format and manual calculations of a few examples confirms the result.
+  ##Here is the code for deletion of all cases not 12 yet at their inclusion - this is commented out for the moment:
+  ##merged[POP == "Case" & ageAtInclusion < 12 , remove := 1]
+  ##merged[POP == "Case" & ageAtInclusion >= 12 , remove := NA]
+  ##merged <- merge[is.na(remove) == TRUE]
+
+  ##Assumes that registry data were drawn at the 30th of June 2016 - this represents the approx. mean of actual dates.
+  merged[ , timeSinceInclusion := difftime( as.Date("2016-06-30") , Indexdato , units = "days")/365.24]
+  ##Define sex variable
+  merged[C_KON == "K" , gender := 1]
+  merged[C_KON == "M" , gender := 0]
+
+  ##Adjusting for deceased in the data:
+  persondoed <- read_dta("d:/data/Workdata/706927/Eksterne data/t_dodsaarsag_2_total_klartilmerge.dta")
+  setDT(persondoed)
+  persondoed <- persondoed[ , .(pnr , D_STATDATO)]
+  setkey(persondoed , pnr)
+  setkey(merged, pnr)
+  merged <- merge(merged , persondoed , all.x = TRUE)
+  merged[is.na(D_STATDATO) == FALSE , difftime(D_STATDATO , Indexdato , units = "days")/365.24]
+  ##No negative numbers. Thus, noone deceased before inclusion - this would not make any sense anyway, just checking the variable.
+  ##As I may change the Indexdato for sensitivity analysis purposes, all participants dead before inclusion has to be deleted. I do this:
+  merged[difftime(D_STATDATO , Indexdato) < 0 , remove := 1]
+  merged[difftime(D_STATDATO , Indexdato) >= 0 , remove := NA]
+  merged <- merged[is.na(remove) == TRUE]
+  ##Calculating how much follow-up-time was lost by their death:
+  merged[is.na(D_STATDATO) == FALSE , noFollowup := difftime(as.Date("2016-06-30") , D_STATDATO , units = "days")/365.24]
+  merged[ , noFollowup := as.numeric(noFollowup)]
+  merged[ , timeSinceInclusion := as.numeric(timeSinceInclusion)]
+  ##Subtracting the lost follow-up-time from timeSinceInclusion:
+  ##merged[is.na(noFollowup) == FALSE , timeSinceInclusion]
+  merged[is.na(noFollowup) == FALSE , timeSinceInclusion := timeSinceInclusion - noFollowup]
+  ##merged[is.na(noFollowup) == FALSE , timeSinceInclusion]
+  ##Behaves as expected. 
+  ##merged[ , str(timeSinceInclusion)]
+  ##merged[ , table(is.na(timeSinceInclusion))]
+  ##View(merged[ , .(Indexdato , timeSinceInclusion)])
+  ##merged[ , hist(timeSinceInclusion)]
+  ##merged[ , range(timeSinceInclusion)]
+  ##Carries the expected format, fits with manual controls. As the exposed time varies between 9 and 15 years, negative binomial regression with offset will be used.
+  merged[ ageAtInclusion >= 0 & ageAtInclusion < 4 , ageAtInclusionGrouped := 1]
+  merged[ ageAtInclusion >= 4 & ageAtInclusion < 8 , ageAtInclusionGrouped := 2]
+  merged[ ageAtInclusion >= 8 & ageAtInclusion < 12 , ageAtInclusionGrouped := 3]
+  merged[ ageAtInclusion >= 12 & ageAtInclusion < 16 , ageAtInclusionGrouped := 4]
+  merged[ , table(ageAtInclusionGrouped , useNA = "always")]
+
+  ##I need parents' pnr: 
+  parents <- read_dta("d:/data/Workdata/706927/Population/pop_boern_foraeldre_150618.dta")
+  parents <- data.table(parents)
+  parents <- parents[ , .(pnr , foraelder_pnr, MOR_FAR)]
+  ##Split into mothers and fathers:
+  mothers <- parents[MOR_FAR == 2]
+  fathers <- parents[MOR_FAR == 1]
+  mothers <- mothers[ , .(pnr , foraelder_pnr)]
+  fathers <- fathers[ , .(pnr , foraelder_pnr)]
+  setnames(mothers , "foraelder_pnr" , "pnr_mor")
+  setnames(fathers , "foraelder_pnr" , "pnr_far")
+  ##I merge on the pnr:
+  setkey(mothers, pnr)
+  setkey(fathers, pnr)
+  merged <- merge(merged , mothers , all.x = TRUE)
+  merged <- merge(merged , fathers , all.x = TRUE)
+  ##View(merged[ , .(pnr , pnr_mor1 , pnr_far1 , pnr_mor , pnr_far)])
+  ##The merged pnrs matches the pnrs already present for the cases.
+
+  #I now leave out all observations that has the same mother or father, except for the one with the largest timeSinceInclusion. 
+  ##Defining a negative version of timeSinceInclusion because of the way setkey sorts values:
+  merged[ , negTimeSinceInclusion := -timeSinceInclusion]
+  ##Sorting values on timeSinceInclusion, grouped by pnr_mor:
+  setkey(merged , pnr_mor , negTimeSinceInclusion)
+  ##View(merged[ , .(pnr , pnr_mor , timeSinceInclusion)])
+  ##Reducing to only one entry for each mother, and preserving all entries with no mother pnr:
+  temp <- rbindlist(list(merged[is.na(pnr_mor) == FALSE & duplicated(pnr_mor) == FALSE] , merged[is.na(pnr_mor) == TRUE]))
+  merged <- temp
+
+  ##And the same with any remaining fathers:
+  setkey(merged , pnr_mor , negTimeSinceInclusion)
+  ##Reducing to only one entry for each father, and preserving all entries with no mother pnr:
+  temp <- rbindlist(list(merged[is.na(pnr_far) == FALSE & duplicated(pnr_far) == FALSE] , merged[is.na(pnr_far) == TRUE]))
+  merged <- temp
+
+  ##Exporting the dataset for my data manager's processing of educational data:
+  tilKatrine <- merged[ , .(pnr_mor , Indexdato)]
+  library(foreign)
+  write.dta(tilKatrine , "tilKatrine.dta")
+  ##Then, in Stata to make the dates work, type: format Indexdato %td
+
+  ##Define mother's educational level
+  education <- read_sas("d:/data/Workdata/706927/Registerdata/mor_uddahoej_300818.sas7bdat")
+  setDT(education)
+  education[audd2 == 1 , motherEducLevel := 1]
+  education[audd2 > 1 & audd2 <=4, motherEducLevel := 2]
+  education[audd2 > 4 & audd2 <=9, motherEducLevel := 3]
+  education[ , table(motherEducLevel , useNA = "always")]
+  ##View(education[is.na(motherEducLevel) == TRUE])
+  ##Behaves as expected. There are a number of NA values; looking in the original dataset, there are only NA observations on all pnrs resulting in an NA classification. Have now consulted Statistics Denmark and it seems that NA's can both represent someone with no primary education at all - and missing data. Thus, this could be a very diverse group. Have no good data to use for imputation - thus, creating a category in the final cathegorical variable called missing, after merging with merged.
+
+  ## ##This is the section where NA-values are tested - commented out. 
+  ## ##All entries where motherEducLevel is NA represents a audd2 which is also NA. Will look for those pnrs in the original dataset:
+  ## naPnr <- education[is.na(motherEducLevel) == TRUE , pnr]
+  ## ##Opening the original file, see explanation below:
+  ## attach("d:/data/Workdata/706927/Registerdata/UDDA_foraelder_150618.RData")
+  ## educationTest <- UDDA_foraelder_150618
+  ## detach()
+  ## setDT(educationTest)
+  ## View(educationTest[pnr %in% naPnr])
+  ## educationTest[pnr %in% naPnr , table(hfaudd , useNA = "always")]
+
+  ##Preparing for merge with merged:
+  education <- education[ , .(pnr_mor, motherEducLevel)]
+  setkey(education , pnr_mor)
+  setkey(merged , pnr_mor)
+  merged <- merge(merged , education , all.x = TRUE)
+  setkey(merged , pnr)
+  ##View(merged)
+  ##Behaves as expected.
+
+  merged[is.na(motherEducLevel) == TRUE , motherEducLevel := 0]
+  merged[ , table(motherEducLevel , useNA = "always")]
+  ##Behaves as expected.
+
+  ##This code block makes a much more error prone coding of mother's education; commented out for the moment. 
+  ## ##There is some kind of error in the UDDA_foraelder_150618.dta-file causing the R-package Haven to fail trying to import. I used StatTransfer 14 (which also fails unless you enable unicode support) to convert the data to an R Workspace which I attach below and transfer to an object in my own workspace. After this I detach the file again.
+  ## attach("d:/data/Workdata/706927/Registerdata/UDDA_foraelder_150618.RData")
+  ## education <- UDDA_foraelder_150618
+  ## detach()
+  ## education <- data.table(education)
+  ## ##education[ , str(hfaudd)]
+  ## ##Define a variable with three levels as documented below:
+  ## none <- 0
+  ## prim <- 1
+  ## seco <- 2
+  ## degr <- 3
+  ## ##Lists based on variable definition from TIMES, www.dst.dk - quite rough, self-made definition, please revise if possible:
+  ## nonel <- 1
+  ## priml <- c(200 , 205 , 210 , 1000:1023 , 1106:1123 , 1208:1523 , 2508 , 2509 , 2510 , 2511)
+  ## ##priml
+  ## secol <- c(215 , 1000:2000)
+  ## ##Excluding values I know belong in a lower category
+  ## secol <- secol[! secol %in% priml]
+  ## ##secol
+  ## degrl <- c(100:999 , 2001:9999)
+  ## degrl <- degrl[! degrl %in% priml]
+  ## degrl <- degrl[! degrl %in% secol]
+  ## ##degrl
+  ## ##All lists behaves as expected
+  ## education[hfaudd %in% nonel , educLevel := none]
+  ## education[hfaudd %in% priml , educLevel := prim]
+  ## education[hfaudd %in% secol , educLevel := seco]
+  ## education[hfaudd %in% degrl , educLevel := degr]
+  ## ##education[ , table(educLevel , useNA = "always")]
+  ## ##education[ , table(hfaudd , useNA = "always")]
+  ## ##View(education[ , .(hfaudd , educLevel)])
+  ## ##Now all observations has been assigned an educational level.
+  ## ##I need parents' pnr: 
+  ## parents <- read_dta("d:/data/Workdata/706927/Population/pop_boern_foraeldre_150618.dta")
+  ## parents <- data.table(parents)
+  ## parents <- parents[ , .(pnr , foraelder_pnr, MOR_FAR)]
+  ## ##Split into mothers and fathers:
+  ## mothers <- parents[MOR_FAR == 2]
+  ## fathers <- parents[MOR_FAR == 1]
+  ## mothers <- mothers[ , .(pnr , foraelder_pnr)]
+  ## fathers <- fathers[ , .(pnr , foraelder_pnr)]
+  ## setnames(mothers , "foraelder_pnr" , "pnr_mor")
+  ## setnames(fathers , "foraelder_pnr" , "pnr_far")
+  ## ##I merge on the pnr:
+  ## setkey(mothers, pnr)
+  ## setkey(fathers, pnr)
+  ## merged <- merge(merged , mothers , all.x = TRUE)
+  ## merged <- merge(merged , fathers , all.x = TRUE)
+  ## ##View(merged[ , .(pnr , pnr_mor1 , pnr_far1 , pnr_mor , pnr_far)])
+  ## ##The merged pnrs matches the pnrs already present for the cases.
+  ## ##Now I reduce the education dataset to only the columns I need:
+  ## education <- education[ , .(pnr , HF_VFRA , educLevel)]
+  ## setnames(education  , "pnr" , "pnr_mor")
+  ## setkey(education , pnr_mor)
+  ## ##I make a reduced dataset to merge to the education dataset
+  ## childMotherIndex <- merged[ , .(pnr , pnr_mor , Indexdato , POP)]
+  ## setkey(childMotherIndex , pnr_mor)
+  ## educMother <- education[childMotherIndex , nomatch = 0]
+  ## ##View(educMother[POP == "Case"])
+  ## ##educMother contains observations with the same pnr-pairs amongst parents and children as observed in dataset merged by a few manual checks. Looks as expected.
+  ## educMother[ , timeToIndex := difftime(Indexdato , HF_VFRA , units = "days")]
+  ## educMother <- educMother[timeToIndex >= 0]
+  ## educMother[ , table(timeToIndex , useNA = "always")]
+  ## ##Now all observations with a negative timeToIndex (educational degrees obtained after inclusion), or missing dates have been excluded.
+  ## ##Finding the observations with the shortest time to Indexdato and keeping only those:
+  ## educMother[ , shortestTime := min(timeToIndex) , by = pnr]
+  ## educMother <- educMother[shortestTime == timeToIndex]
+  ## ##View(educMother)
+  ## ##str(educMother)
+  ## ##Behaves as expected - still many observations with the same low number.
+  ## ##Finding the observations with the largest educLevel and keeping only those:
+  ## educMother[ , highestLevel := max(educLevel) , by = pnr]
+  ## educMother <- educMother[highestLevel == educLevel]
+  ## ##str(educMother)
+  ## ##View(educMother)
+  ## ##We now know that only the dates closest to and before the indexdate and the highest educational levels are retained. We also know this has been done for each pnr. All observations with the same pnr thus contains the educational level we need. We thus reduce to only one observation for each pnr:
+  ## educMother[ , duplicated := duplicated(pnr)]
+  ## educMother <- educMother[duplicated == FALSE]
+  ## ##View(educMother)
+  ## ##str(educMother)
+  ## ##Now there is one observation for each pnr and a level of the mother's education. The dataset is reduced to these data; to perform an extra check, the pnr_mor is retained as well:
+  ## educMother <- educMother[ , .(pnr , educLevel , pnr_mor)]
+  ## setnames(educMother, c("educLevel" , "pnr_mor") , c("motherEducLevel" , "pnr_mor_test"))
+  ## setkey(educMother , pnr)
+  ## setkey(merged , pnr)
+  ## merged <- merge(merged , educMother , all.x = TRUE)
+  ## ##View(merged)
+  ## ##merged[ , table(pnr_mor == pnr_mor_test , useNA = "always")]
+  ## ##All pnrs matched also either match with the imported mother-pnr, or has a missing value on education. The variable behaves as expected.
+  ## ##merged[ , table(motherEducLevel , useNA = "always")]
+
+  ##Define separation during childhood variable
+
+  separationFull <- read_dta("D:/data/Workdata/706927/Registerdata/forael_BEF_290618.dta")
+  setDT(separationFull)
+  ##Starting with first entry on civil status. Deleting everything that does not indicate a new divorce or separation from non-married relation:
+  separationFull[civst1 != "F" & civst1 != "O" , CIV_VFRA1 := NA] 
+  ##View(separationFull)
+  ##Working as expected.
+  ##Make list of all changes indicating a divorce or separation (some of these changes should not be allowed in the registry, for example from married to separated from registered-but-not-married partner, but are included to cover all possible entries.)
+  divSep <- c("GG" , "GF" , "GO" , "PO" , "PU")
+  ##GG is based on feedback from Statistics Denmark stating that GG is probably indicating a marriage, then a divorce and a new marriage. GU is indicator of an error in the data - the correct change would be from married to separated, GF, GU probably means a simple error. 
+  ##Making a loop, for each possible couple of adjacent civst-variables generating a pair of letters as those referenced above, testing if the pair matches with one of those and otherwise fill the corresponding date with NA. Tested this loop by executing the commands one by one and then comparing the result to those of the loop:
+  for (i in 1:10) {
+      j <- i + 1
+      separationFull[ , temp := paste0(get((noquote(paste0("civst" , i)))) , get((noquote(paste0("civst" , j)))))]
+      separationFull[(temp %in% divSep) == FALSE , noquote(paste0("CIV_VFRA" , j)) := NA]
+  }
+
+  ##Now I want to mark all dates in the interval between birth date and inclusion with a separationBeforeInclusion == 1.
+  for (i in 1:11) {
+      separationFull[get(noquote(paste0("CIV_VFRA" , i))) >= FOED_DAG & get(noquote(paste0("CIV_VFRA" , i))) <= Indexdato , separationBeforeInclusion := 1]
+  }
+  ##Works as expected. I now have any divorce or separation that happened after the child was born but before it was included in the study. As we do not have data on addresses, this could include divorces by parent who moved to another location and with whom the child has no interaction. However, as I assume most children will be in contact with both parents in some form, and thus exposed to whatever stresses possibly associated with the situation for at least one of the parents, this choice was made.
+  ##I now reduce to only those observations with separationBeforeInclusion == 1:
+  separationFull <- separationFull[separationBeforeInclusion == 1]
+  ##Removing duplicate pnrs:
+  separationFull <- separationFull[duplicated(pnr) == FALSE]
+  ##Reducing to relevant variables:
+  separationFull <- separationFull[ , .(pnr , separationBeforeInclusion)]
+  ##Merging with main dataset
+  merged <- merge(merged , separationFull , all.x = TRUE)
+  ##Assuming that NA means no divorce:
+  merged[is.na(separationBeforeInclusion) == TRUE , separationBeforeInclusion := 0]
+  ##View(merged)
+  ##Works as expected.
+
+  ##Define deceased parent or spouse of parent during childhood. Very similar to above algorithm for divorce/separation.
+
+  separationFull <- read_dta("D:/data/Workdata/706927/Registerdata/forael_BEF_290618.dta")
+  setDT(separationFull)
+  ##Deleting all dates that does not indicate the death of either parent:
+  for (i in 1:11) {
+      separationFull[get(noquote(paste0("civst" , i))) != "L" & get(noquote(paste0("civst" , i))) != "D" & get(noquote(paste0("civst" , i))) != "E" , noquote(paste0("CIV_VFRA" , i)) := NA]
+  }
+  ##Behaves as expected.
+  ##Now I want to mark all dates in the interval between birth date and inclusion with a deathBeforeInclusion == 1.
+  for (i in 1:11) {
+      separationFull[get(noquote(paste0("CIV_VFRA" , i))) >= FOED_DAG & get(noquote(paste0("CIV_VFRA" , i))) <= Indexdato , deathBeforeInclusion := 1]
+  }
+  ##Works as expected. I now have any death that happened after the child was born but before it was included in the study. As we do not have data on addresses, this could include deaths by parent or their spouse, who moved to another location and with whom the child has no interaction. However, as I assume most children will be in contact with both parents in some form, and thus exposed to whatever stresses possibly associated with the situation for at least one of the parents, this choice was made.
+  ##I now reduce to only those observations with deathBeforeInclusion == 1:
+  separationFull <- separationFull[deathBeforeInclusion == 1]
+  ##Removing duplicate pnrs:
+  separationFull <- separationFull[duplicated(pnr) == FALSE]
+  ##Reducing to relevant variables:
+  separationFull <- separationFull[ , .(pnr , deathBeforeInclusion)]
+  ##Merging with main dataset
+  merged <- merge(merged , separationFull , all.x = TRUE)
+  ##Assuming that NA means no death:
+  merged[is.na(deathBeforeInclusion) == TRUE , deathBeforeInclusion := 0]
+  ##View(merged)
+  ##Works as expected. 
+
+  ## ##This code block loads dates for separation/divorce derived from the dataset containing only children with separated/divorced parents at index date. It is commented out for the moment. 
+  ## separation <- read_dta("D:/data/Workdata/706927/Eksterne data/t_person_total.dta")
+  ## separation <- data.table(separation)
+  ## ##View(separation)
+  ## ##Reducing to the variables needed:
+  ## separation <- separation[ , .(pnr , d_skilsmisse)]
+  ## setnames(separation , "d_skilsmisse" , "separationDate")
+  ## setkey(separation , pnr)
+  ## merged <- merge(merged , separation , all.x = TRUE)
+  ## ##View(merged)
+  ## ##merged[ , str(separationDate)]
+  ## merged[ , separationBeforeInclusion := difftime(Indexdato , separationDate , units = "days")]
+  ## ##View(merged[ , .(Indexdato , separationDate , separationBeforeInclusion)])
+  ## ##merged[ , str(separationBeforeInclusion)]
+  ## ##merged[ , range(as.numeric(separationBeforeInclusion) , na.rm = TRUE)]
+  ## ##There are no negative values - that means only separations before or exactly on the date of inclusion are included here. Thus, all with a positive number should be labelled as in a separated family.
+  ## merged[ is.na(separationBeforeInclusion) == FALSE , separationAtInclusion := 1]
+  ## ##Assuming NA means no separation:
+  ## merged[ is.na(separationBeforeInclusion) == TRUE , separationAtInclusion := 0]
+  ## ##View(merged[ , .(separationAtInclusion , Indexdato , separationBeforeInclusion , separationDate)])
+  ## ##Manual comparison of dates and status reveals that all with a separation-date have separation-status set as 1. Behaves as expected.
+
+
+  ##Define school non-attendance
+  nonattend <- read_dta("D:/data/Workdata/706927/Registerdata/POP_fravaer_140618.dta")
+  nonattend <- data.table(nonattend)
+  ##View(nonattend)
+  ##Get Indexdato into nonattend
+  ##setkey(nonattend , pnr)
+  ##pnrIndex <- merged[ , .(pnr , Indexdato)]
+  ##setkey(pnrIndex , pnr)
+  ##nonattend <- merge(nonattend , pnrIndex , all.x = TRUE)
+  ##View(nonattend)
+  ##Indexdato has already been imported into nonattend; the steps above are thus commented out.
+  ##nonattend[ , head(maaned , n = 30)]
+  ##maaned is structured as a four-digit year and two-digit month. This is translated into the date-variable month:
+  ##Using the middle of the month to expand to interpretable dates; if the Indexdato is in the same month as mentioned, I wish the month to be included if the Indexdato is > the 15th and excluded if < the 15th:
+  nonattend[ , month := paste(substr(maaned, 1 , 4) , substr(maaned , 5 , 6) , "15" , sep = "-")]
+  nonattend[ month == "NaN--15"] <- NA 
+  nonattend[ , month := as.Date(month , format = "%Y-%m-%d")]
+  ##View(nonattend[ , .(maaned , month)])
+  ##nonattend[ , str(month)]
+  ##nonattend[ , head(month , n = 30)]
+  ##Now an interpretable date. Comparing to Indexdato:
+  nonattend[ , timeToIndex := difftime(month , Indexdato , units = "days")]
+  ##View(nonattend[ , .(timeToIndex , month , Indexdato)])
+  ##nonattend[ , range(timeToIndex , na.rm = TRUE)]
+  ##As all numbers are positive, all observations are after inclusion. The number of non-attendance-days, DageIaltFra, is aggregated on pnr, and the mean of all observations are computed:
+  ##nonattAgg <- nonattend[ , `:=`(SchoolNonatt = sum(DageIaltFra) , timeSinceInclusionSchoolNonatt = .N/12) , by = pnr]
+  ##Variable behaves as expected, a few manual controls confirms that DageIaltFra is summarized, grouped by pnr. A new dataset is formed:
+  nonattAgg <- nonattend[ , .(SchoolNonatt = sum(DageIaltFra) , timeSinceInclusionSchoolNonatt = .N/12) , by = pnr]
+  setkey(nonattAgg , pnr)
+  ##View(nonattAgg)
+  setkey(nonattend , pnr)
+  ##View(nonattend[ , .(pnr , DageIaltFra)]) 
+  ##Variable behaves as expected, a few manual controls confirms that DageIaltFra is summarized, grouped by pnr.
+  merged <- merge(merged , nonattAgg , all.x = TRUE)
+  ##View(merged[ , .(pnr , Indexdato , SchoolNonatt)])
+  ##merged[ , table(is.na(SchoolNonatt))]
+  ##Unfortunately this variable only exist for about 2/5 of the dataset. This outcome can only be analyzed in a subgroup.  
+
+  ##Define suicide and self-harm
+  deathCause <- read_dta("D:/data/Workdata/706927/Eksterne data/t_dodsaarsag_2_total.dta")
+  deathCause <- data.table(deathCause)
+  ##View(deathCause)
+  ##Columns to be looked at:
+  diagVar <- c("C_DODTILGRUNDL_ACME" , "C_DOD_1A" , "C_DOD_1B" , "C_DOD_1C" , "C_DOD_1D" , "C_DOD_21" , "C_DOD_22" , "C_DOD_23" , "C_DOD_24" , "C_DOD_25" , "C_DOD_26" , "C_DOD_27" , "C_DOD_28")
+  ##Diagnoses indicating suicide by self-harm(when found in the death register):
+  diagHarm <- c("X60" , "X61" , "X62" , "X63" , "X64" , "X65" , "X66" , "X67", "X68" , "X69" , "X70" , "X71" , "X72" , "X73" ,"X74" , "X75" , "X76" , "X77" , "X78" , "X79" , "X80" , "X81" , "X82" , "X83" , "X84" , "Y87")
+  ##Reduce all diagnoses to only three digits:
+  for (i in diagVar) {
+      deathCause[ , (i) := substr(as.character(get(i)) , 1 , 3)]
+  }
+  ##Mark all with a diagnosis of self-harm as the cause of death with 2:
+  for (i in diagVar) {
+      deathCause[as.character(get(i)) %in% diagHarm , deathSelfHarm := 2]
+  }
+  ##View(deathCause)
+  ##All diagnoses are reduced to three characters, those with a diagnosis in diagHarm are recognized as suicides. 
+  ##Merge the result, and also the date of death in case it's needed for censoring, into the main dataset:
+  deathCause <- deathCause[ , .(pnr , D_STATDATO , deathSelfHarm)]
+  setkey(deathCause , pnr)
+  setnames(deathCause , "D_STATDATO" , "D_STATDATOSelfHarm")
+  merged <- merge(merged , deathCause , all.x = TRUE)
+  ##View(merged[ , .(pnr , Indexdato , D_STATDATO , deathSelfHarm)])
+  ##View(merged[deathSelfHarm == 2 , .(pnr , Indexdato , D_STATDATO , deathSelfHarm)])
+  ##All looks as expected, only very few values not missing (that is, very few suicides in the samples).
+  ##Assuming that no registered suicide means no fatal self-harm:
+  merged[is.na(deathSelfHarm) == TRUE , deathSelfHarm := 0]
+  ##Retrieving data to look for non-fatal self-harm:
+  ##As I will have to load the same data again later on, I gather all the data-loading related to diagnoses in loadDiag() and remove all entries that lies before inclusion (this was tested by comparison to the unaltered datasets). As the dates for treatment are only in aDiag and all other datasets draws on this, only aDiag needs to have earlier entries removed:
+
+  loadDiag <- function() {
+      ##Retrieving data to look for non-fatal self-harm:
+      assign("aDiag" , read_dta("D:/data/Workdata/706927/Eksterne data/t_adm_total.dta") , envir=.GlobalEnv)
+      setDT(aDiag)
+      setkey(aDiag , pnr)
+      mIndexdato <- merged[ , .(pnr , Indexdato)]
+      setkey(mIndexdato , pnr)
+      aDiag <- merge(aDiag , mIndexdato , all.x = TRUE)
+      aDiag <- aDiag[difftime(D_INDDTO, Indexdato) >= 0]
+      assign("aDiag" , aDiag , envir=.GlobalEnv)
+      ##For later merging use:
+      assign("mPnr" , aDiag , envir=.GlobalEnv)
+      ##View(aDiag) ##Use C_ADIAG.
+      assign("totDiag" , read_dta("D:/data/Workdata/706927/Eksterne data/t_diag_total.dta") , envir=.GlobalEnv)
+      assign("totDiag" , data.table(totDiag) , envir=.GlobalEnv)
+      ##View(totDiag) ##Use C_TILDIAG, C_DIAG.
+      assign("oprDiag" , read_dta("D:/data/Workdata/706927/Eksterne data/t_sksopr_total.dta") , envir=.GlobalEnv)
+      assign("oprDiag" , data.table(oprDiag) , envir=.GlobalEnv)
+      ##View(oprDiag) ##Use C_OPR, C_TILOPR.
+      assign("opruDiag" , read_dta("D:/data/Workdata/706927/Eksterne data/t_sksube_total.dta") , envir=.GlobalEnv)
+      assign("opruDiag" , data.table(opruDiag) , envir=.GlobalEnv)
+      ##View(opruDiag) ##Use C_OPR, C_TILOPR.
+      assign("accidentDiag" , read_dta("D:/data/Workdata/706927/Eksterne data/t_ulyk_total.dta") , envir=.GlobalEnv)
+      assign("accidentDiag" , data.table(accidentDiag) , envir=.GlobalEnv)
+      ##View(accidentDiag[grepl("^EUW" , C_ULYK) == TRUE | grepl("^EUW" , C_TILULYK) == TRUE])
+      ##accidentDiag[grepl("^D" , C_ULYK) == TRUE | grepl("^D" , C_TILULYK) == TRUE]
+      ##A number of incidents are here coded with EUW, a European classification standard for self-harm. No incidents are coded with diagnoses of the type found in diagHarm.
+  }
+  loadDiag()
+  ##aDiag[ , table(C_ADIAG)]
+  ##totDiag[ , table(C_TILDIAG)]
+  ##totDiag[ , table(C_DIAG)]
+  ##oprDiag[ , table(C_OPR)]
+  ##oprDiag[ , table(C_TILOPR)]
+  ##opruDiag[ , table(C_OPR)]
+  ##opruDiag[ , table(C_TILOPR)]
+  ##Have looked up classifications in www.medinfo.dk. Only those diagnoses starting with D are relevant to the current analysis. Diagnoses of EUW-type would also be - but are not present in the dataset, except from accidentDiag which will be dealt with separately. 
+
+  ##To do what is necessary with each dataset, I developed a series of steps, checking each one as documented below. I then put these steps into a function and checked that I got the same result - which I did. (the function has been modified by later changes, all of which were tested before insertion on a suitable dataset, and after insertion by comparing the results of the function with what was intended. 
+  ##First, this is the commented-out test on the first dataset:
+
+  ##aDiag:
+  ##Columns to be looked at:
+  ##diagVar <- c("C_ADIAG")
+  ##Remove all irrelevant entries:
+  ##for (i in diagVar) {
+  ##    aDiag[grepl("^D" , as.character(get(i))) == FALSE  , (i) := "NA"]
+  ##}
+  ##View(aDiag[grepl("^D" , C_ADIAG) == FALSE])
+  ##View(aDiag)
+  ##Behaves as expected.
+  ##Reduce all diagnoses to only three digits:
+  ##for (i in diagVar) {
+  ##    aDiag[ , (i) := substr(as.character(get(i)) , 2 , 4)]
+  ##}
+  ##View(aDiag)
+  ##Behaves as expected.
+  ##Mark all with a diagnosis of self-harm with 1:
+  ##for (i in diagVar) {
+  ##    aDiag[as.character(get(i)) %in% diagHarm , selfHarm := 1]
+  ##}
+  ##aDiag[ , table(selfHarm)]
+  ##View(aDiag[selfHarm == 1])
+  ##Looks as expected.
+  ##Reduce to one entry for each pnr, and only those who has been found to have done self-harm:
+  ##aDiag <- aDiag[is.na(selfHarm) == FALSE]
+  ##aDiag[ , duplicates := duplicated(pnr)]
+  ##aDiag <- aDiag[duplicates == FALSE]
+  ##Reduce to only pnr and selfHarm:
+  ##aDiag <- aDiag[ , .(pnr , selfHarm)]
+  ##setkey(aDiag , pnr)
+  ##merged <- merge(merged , aDiag , all.x = TRUE)
+
+  ##Here is the corresponding function:
+  selfHarmFunc <- function(data , variables) {
+      diagVar <- variables
+      ##Remove all irrelevant entries:
+      for (i in diagVar) {
+	  (data)[grepl("^D" , as.character(get(i))) == FALSE  , (i) := "NA"]
+      }
+      ##Reduce all diagnoses to only three digits:
+      for (i in diagVar) {
+	  (data)[ , (i) := substr(as.character(get(i)) , 2 , 4)]
+      }
+      ##Mark all with a diagnosis of self-harm with 1:
+      for (i in diagVar) {
+	  (data)[as.character(get(i)) %in% diagHarm , selfHarm := 1]
+      }
+      ##Reduce to one entry for each pnr, and only those who has been found to have done self-harm:
+      assign('data' , (data)[is.na(selfHarm) == FALSE])
+      assign('data' , (data)[order(D_INDDTO) , .SD , by = pnr])
+      assign('data' , (data)[ , duplicates := duplicated(pnr)])
+      assign('data' , (data)[duplicates == FALSE])
+      ##Reduce to only pnr, D_INDDTO and selfHarm:
+      assign('data' , (data)[ , .(pnr , D_INDDTO , selfHarm)])    
+      setkey((data) , pnr)
+      assign("merged" , merge(merged , (data) , all.x = TRUE) , .GlobalEnv)
+      return((NULL))
+  }
+
+  ##Now the function can be applied to each dataset - it essentially takes the name of a dataset and the variables containing diagnoses, catches those that contains self-harm, throws away the rest, make all pnrs unique and merges with the original merged dataset. Renaming according to the dataset from which selfHarm originates is then done manually. 
+  selfHarmFunc(aDiag , c("C_ADIAG"))
+  setnames(merged , c("selfHarm" , "D_INDDTO") , c("aDiagSelfHarm" , "D_INDDTOADiagSelfHarm"))
+
+  ##Pnr and D_INDDTO is not in all datasets. Going through "totDiag" , "oprDiag" , "opruDiag" to check for pnr and merge on recnum if it's not there:
+  ##View(totDiag) ##Needs pnr
+  ##Reducing aDiag to prepare for merge:
+  mPnr <- mPnr[ , .(k_recnum , D_INDDTO , pnr)]
+  setkey(mPnr , k_recnum)
+  setnames(totDiag , "v_recnum" , "k_recnum")
+  setkey(totDiag , k_recnum)
+  totDiag <- merge(totDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  totDiag <- totDiag[is.na(pnr) == FALSE]
+  ##View(totDiag)
+  ##totDiag[ , table(is.na(pnr))]
+  ##Behaves as expected. All entries now have a pnr. 
+  selfHarmFunc(totDiag , c("C_TILDIAG" , "C_DIAG"))
+  setnames(merged , c("selfHarm" , "D_INDDTO") , c("totDiagSelfHarm" , "D_INDDTOTotDiagSelfHarm"))
+  ##View(oprDiag)
+  ##Needs pnr.
+  setnames(oprDiag , "v_recnum" , "k_recnum")
+  setkey(oprDiag , k_recnum)
+  oprDiag <- merge(oprDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  oprDiag <- oprDiag[is.na(pnr) == FALSE]
+  ##View(oprDiag)
+  ##oprDiag[ , table(is.na(pnr))]
+  ##Behaves as expected. All entries now have a pnr. 
+  selfHarmFunc(oprDiag , c("C_OPR" , "C_TILOPR"))
+  setnames(merged , c("selfHarm" , "D_INDDTO") , c("oprDiagSelfHarm" , "D_INDDTOOprDiagSelfHarm"))
+  ##The program reports an error. I suspect this is because it didn't find any self-harm diagnoses. 
+  ##oprDiag[C_OPR %in% diagHarm == TRUE , table(C_OPR)]
+  ##oprDiag[C_TILOPR %in% diagHarm == TRUE , table(C_TILOPR)]
+  ##View(oprDiag)
+  ##There are no diagnoses of any relevance to self-harm here.
+  ##View(opruDiag)
+  ##Needs pnr.
+  setnames(opruDiag , "v_recnum" , "k_recnum")
+  setkey(opruDiag , k_recnum)
+  opruDiag <- merge(opruDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  opruDiag <- opruDiag[is.na(pnr) == FALSE]
+  ##View(opruDiag)
+  ##opruDiag[ , table(is.na(pnr))]
+  ##Behaves as expected. All entries now have a pnr. 
+  selfHarmFunc(opruDiag , c("C_OPR" , "C_TILOPR"))
+  setnames(merged , c("selfHarm" , "D_INDDTO") , c("opruDiagSelfHarm" , "D_INDDTOOpruDiagSelfHarm"))
+  ##The program reports an error. I suspect this is because it didn't find any self-harm diagnoses. 
+  ##opruDiag[C_OPR %in% diagHarm == TRUE , table(C_OPR)]
+  ##opruDiag[C_TILOPR %in% diagHarm == TRUE , table(C_TILOPR)]
+  ##View(opruDiag)
+  ##There are no diagnoses of any relevance to self-harm here.
+
+  ##Code all self-harm diagnoses of the EUW-type with accSelfHarm, if any such entry exists. 
+  accidentDiag[grepl("^EUW" , C_ULYK) == TRUE | grepl("^EUW" , C_TILULYK) == TRUE , accSelfHarm := 1]
+  ##View(accidentDiag)
+  ##View(accidentDiag[accSelfHarm == 1])
+  ##A number of relevant entries exist.
+  ##Add pnr and D_INDDTO:
+  setnames(accidentDiag , "v_recnum" , "k_recnum")
+  setkey(accidentDiag , k_recnum)
+  accidentDiag <- merge(accidentDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  accidentDiag <- accidentDiag[is.na(pnr) == FALSE]
+  ##View(accidentDiag)
+  ##accidentDiag[ , table(is.na(pnr))]
+  ##Behaves as expected. All entries now have a pnr. 
+  ##Remove all entries without self-harm-related accidents:
+  accidentDiag <- accidentDiag[is.na(accSelfHarm) == FALSE]
+  accidentDiag <- accidentDiag[order(D_INDDTO) , .SD , by = pnr]
+  accidentDiag <- accidentDiag[ , duplicates := duplicated(pnr)]
+  accidentDiag <- accidentDiag[duplicates == FALSE]
+  ##Reduce to only pnr, D_INDDTO and selfHarm:
+  accidentDiag <- accidentDiag[ , .(pnr , D_INDDTO , accSelfHarm)]    
+  setkey(accidentDiag , pnr)
+  merged <- merge(merged , accidentDiag , all.x = TRUE)
+  setnames(merged , "D_INDDTO" , "D_INDDTOAccSelfHarm")
+  ##Have now analysed all variables containing diagnoses for any self-harm-related information, and merged the result to merged.
+  ##View(merged)
+  ##Now designing the final variable, showing self-harm at any time during the follow-up, from any dataset containing diagnoses:
+  merged[aDiagSelfHarm == 1 | totDiagSelfHarm == 1 | accSelfHarm == 1 | oprDiagSelfHarm == 1 | opruDiagSelfHarm == 1 , selfHarm := 1]
+  ##Constructing a timeSinceInclusionSelfHarm as the difference between the lowest D_INDDTOSelfHarm and Indexdato to be used for offset. For everyone with no event, the value from timeSinceInclusion will simply be copied in. 
+  merged[ , timeSinceInclusionSelfHarm :=
+		difftime(pmin(D_INDDTOADiagSelfHarm ,
+			      D_INDDTOTotDiagSelfHarm ,
+			      D_INDDTOOprDiagSelfHarm ,
+			      D_INDDTOOpruDiagSelfHarm ,
+			      D_INDDTOAccSelfHarm ,
+			      na.rm = TRUE) ,
+			 Indexdato ,
+			 units = "days")/365.24]
+  ##View(merged[ , .(Indexdato , timeSinceInclusion , timeSinceInclusionSelfHarm , selfHarm)])
+  ##Behaves as expected. For all with selfHarm == 1 there is an entry, it is always positive and always lower than the timeSinceInclusion. 
+  ##For all who has not done self-harm, assigning their full observation time as offset:
+  merged[is.na(selfHarm) == TRUE , timeSinceInclusionSelfHarm := timeSinceInclusion]
+  ##Removing the faulty description of days:
+  merged[ , timeSinceInclusionSelfHarm := as.numeric(timeSinceInclusionSelfHarm)]
+  ##Behaves as expected.
+  ##Assuming that no entries means no registered incident of self-harm (which is reasonable as we should have all data from the date of study entry and forth):
+  merged[is.na(selfHarm) == TRUE , selfHarm := 0]
+  ##View(merged)
+  ##Behaves as expected.
+
+
+  ##Define alcohol and drug abuse
+  ##There is a natural lower boundary of age below which the risk of developing brug or alcohol abuse is very low. To code those who are too young to abuse as non-abusers would introduce unnecessary bias. After consulting the literature, I have decided to analyze only those included in the study after a certain age, which was informed by the literature.
+  ##Load all diagnosis-related data:
+  loadDiag()
+  ##aDiag[ , table(C_ADIAG)]
+  ##totDiag[ , table(C_TILDIAG)]
+  ##totDiag[ , table(C_DIAG)]
+  ##oprDiag[ , table(C_OPR)]
+  ##oprDiag[ , table(C_TILOPR)]
+  ##opruDiag[ , table(C_OPR)]
+  ##opruDiag[ , table(C_TILOPR)]
+  diagAlcohol <- c("F100" , "F101" , "F102" , "F103" , "F104" , "F106" , "F107" , "F108" , "F109" , "T510" , "T519" , "K852" , "K860" , "E244" , "G312" , "G621" , "G721" , "I426" , "K292" , "O354" , "P043" , "Q860" , "Y906" , "Y907" , "Y908" , "Y912" , "Y913" , "Z502" , "Z714" , "Z721")
+  diagAlcoholShort <- c("K70" , "X65" , "Y15")
+  diagDrug <- c("F131" , "F132" , "F133" , "F134" , "T436" , "T438" , "O355" , "R782" , "R783" , "R784" , "Z715" , "Z722")
+  diagDrugShort <- c("F11" , "F12" , "F14" , "F15" , "F16" , "F18" , "F19" , "T40")
+
+  ##Reusing the function from the self-harm variable constructed earlier. 
+  alcoholFunc <- function(data , variables , varLong , varShort) {
+      diagVar <- variables
+      ##Remove all irrelevant entries:
+      for (i in diagVar) {
+	  (data)[grepl("^D" , as.character(get(i))) == FALSE  , (i) := "NA"]
+      }
+      ##Reduce all diagnoses to only four digits:
+      for (i in diagVar) {
+	  (data)[ , (i) := substr(as.character(get(i)) , 2 , 5)]
+      }
+      ##Mark all with a diagnosis of alcohol abuse with 1 using varLong:
+      for (i in diagVar) {
+	  (data)[as.character(get(i)) %in% varLong , alcoholAbuse := 1]
+      }
+      ##Reduce all diagnoses to only three digits:
+      for (i in diagVar) {
+	  (data)[ , (i) := substr(as.character(get(i)) , 1 , 3)]
+      }
+      ##Mark all with a diagnosis of alcohol abuse with 1 using varShort:
+      for (i in diagVar) {
+	  (data)[as.character(get(i)) %in% varShort , alcoholAbuse := 1]
+      }
+      ##Remove all markings indicating a debut before 12 years of age ##This variable is currently not being used; keeping it in case it's needed for a sensitivity analysis. 
+      ##Merge with merged, take in child age and D_FODDTO:
+      mergedMerge <- merged[ , .(pnr , D_FODDATO)]
+      setkey(mergedMerge , pnr)
+      setkey((data) , pnr)
+      assign('data' , merge((data) , mergedMerge , all.x = TRUE))
+      ##Copy current markings to new variables:
+      (data)[ , alcoholAbuse12 := alcoholAbuse]
+      ##Delete markings of entries where the child is 12 or below:
+      (data)[difftime(D_INDDTO, D_FODDATO , units = "days")/365.24 < 12 , alcoholAbuse12 := NA]
+      ##Backup data for the above-12-variable:
+      assign("data12" , (data))
+      ##Reduce to one entry for each pnr, and only those who has been found to have alcohol abuse:
+      assign('data' , (data)[is.na(alcoholAbuse) == FALSE])
+      ##Ensuring the date of the first occurrence is kept; ordering after D_INDDTO, grouped by pnr:
+      assign('data' , (data)[order(D_INDDTO) , .SD , by = pnr])
+      assign('data' , (data)[ , duplicates := duplicated(pnr)])
+      assign('data' , (data)[duplicates == FALSE])
+      ##Reduce to only pnr, time of treatment(D_INDDTO) and alcoholAbuse:
+      assign('data' , (data)[ , .(pnr , D_INDDTO , alcoholAbuse)])    
+      setkey((data) , pnr)
+      assign("merged" , merge(merged , (data) , all.x = TRUE) , .GlobalEnv)
+      ##Repeat the steps above for alcoholAbuse12:
+      ##Reduce to one entry for each pnr, and only those who has been found to have alcohol abuse:
+      assign("data12" , (data12)[is.na(alcoholAbuse12) == FALSE])
+      assign("data12" , (data12)[ , duplicates := duplicated(pnr)])
+      assign("data12" , (data12)[duplicates == FALSE])
+      ##Reduce to only pnr, time of treatment(D_INDDTO, alcoholAbuse and alcoholAbuse12:
+      assign("data12" , (data12)[ , .(pnr , alcoholAbuse12)])    
+      setkey((data12) , pnr)
+      assign("merged" , merge(merged , (data12) , all.x = TRUE) , .GlobalEnv)
+      return((NULL))
+  }
+  alcoholFunc(aDiag , "C_ADIAG" , diagAlcohol , diagAlcoholShort)
+  setnames(merged , c("alcoholAbuse" , "alcoholAbuse12" , "D_INDDTO") , c("aDiagAlcoholAbuse" , "aDiagAlcoholAbuse12" , "D_INDDTOADiagAlcoholAbuse"))
+  ##View(merged)
+  ##Looks as expected. Will take a look on a few cases(pnr deleted, microdata):
+  loadDiag()
+  ##View(aDiag[pnr == "***"])
+  ##View(aDiag[pnr == "***"])
+  ##View(aDiag[C_ADIAG == "K70"])
+  ##View(aDiag[C_ADIAG == "X65"])
+  ##View(aDiag[C_ADIAG == "Y15"])
+  ##Tested a few pnrs and looked for all three-digit codes - turns out there are none in the dataset, but if there were, from the dataset's look when the function was done it seems they would have been identified.
+  ##Now doing the same for totDiag:
+  ##First, adding pnr and D_INDDTO:
+  mPnr <- mPnr[ , .(k_recnum , pnr , D_INDDTO)]
+  setkey(mPnr , k_recnum)
+  setnames(totDiag , "v_recnum" , "k_recnum")
+  setkey(totDiag , k_recnum)
+  totDiag <- merge(totDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  totDiag <- totDiag[is.na(pnr) == FALSE]
+  ##Then, the same procedure as for aDiag:
+  alcoholFunc(totDiag , c("C_TILDIAG" , "C_DIAG") , diagAlcohol , diagAlcoholShort)
+  setnames(merged , c("D_INDDTO" , "alcoholAbuse" , "alcoholAbuse12") , c("D_INDDTOTotDiagAlcoholAbuse" , "totDiagAlcoholAbuse" , "totDiagAlcoholAbuse12"))
+  ##Checking the result:
+  ##loadDiag()
+  ##mPnr <- mPnr[ , .(k_recnum , pnr , D_INDDTO)]
+  ##setkey(mPnr , k_recnum)
+  ##setnames(totDiag , "v_recnum" , "k_recnum")
+  ##setkey(totDiag , k_recnum)
+  ##totDiag <- merge(totDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  ##totDiag <- totDiag[is.na(pnr) == FALSE]
+  ##View(totDiag[pnr == "***"])
+  ##View(totDiag[C_TILDIAG == "K70"])
+  ##View(totDiag[C_DIAG == "K70"])
+  ##View(totDiag[C_TILDIAG == "X65"])
+  ##View(totDiag[C_DIAG == "X65"])
+  ##View(totDiag[C_TILDIAG == "Y15"])
+  ##View(totDiag[C_DIAG == "Y15"])
+  ##No three-digit codes here as well. Looked at an entry with a new alcohol abuse code, that was not in aDiag - this was coded as expected. 
+  ##Now doing the same for oprDiag:
+  setnames(oprDiag , "v_recnum" , "k_recnum")
+  setkey(oprDiag , k_recnum)
+  oprDiag <- merge(oprDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  oprDiag <- oprDiag[is.na(pnr) == FALSE]
+  alcoholFunc(oprDiag , c("C_OPR" , "C_TILOPR") , diagAlcohol , diagAlcoholShort)
+  setnames(merged , c("alcoholAbuse" , "alcoholAbuse12" , "D_INDDTO") , c("oprDiagAlcoholAbuse" , "oprDiagAlcoholAbuse12" , "D_INDDTOOprDiagAlcoholAbuse"))
+  ##No relevant diagnoses found; program returns an error.
+  ##Now doing the same for opruDiag:
+  setnames(opruDiag , "v_recnum" , "k_recnum")
+  setkey(opruDiag , k_recnum)
+  opruDiag <- merge(opruDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  opruDiag <- opruDiag[is.na(pnr) == FALSE]
+  ##The line below throws an error. This is likely because there are no instances of alcohol abuse in opruDiag, just checked. To avoid future confusion, I replace the error message with NA (update - error seems to have stopped, the merge was conflicting with an upstream duplicate which has now been removed):
+  tryCatch(alcoholFunc(opruDiag , c("C_OPR" , "C_TILOPR") , diagAlcohol , diagAlcoholShort) ,
+	   error = function(cond){return(NA)})
+  setnames(merged , c("alcoholAbuse" , "alcoholAbuse12" , "D_INDDTO") , c("opruDiagAlcoholAbuse" , "opruDiagAlcoholAbuse12" , "D_INDDTOOpruDiagAlcoholAbuse"))
+
+
+  ##accidentDiag contains no data of relevance to alcohol or drug abuse. 
+  merged[aDiagAlcoholAbuse == 1 |
+	 totDiagAlcoholAbuse == 1 |
+	 oprDiagAlcoholAbuse == 1 |
+	 opruDiagAlcoholAbuse == 1 ,
+	 alcoholAbuse := 1]
+  merged[aDiagAlcoholAbuse12 == 1 |
+	 totDiagAlcoholAbuse12 == 1 |
+	 oprDiagAlcoholAbuse12 == 1 |
+	 opruDiagAlcoholAbuse12 ,
+	 alcoholAbuse12 := 1]
+  ##Now all with a registered incident of abuse are correctly coded. Now, calculate the age during the first registration of an incident:
+  merged[alcoholAbuse == 1 , aDiagAlcoholAbuseAge := difftime(D_INDDTOADiagAlcoholAbuse , D_FODDATO , units = "days")/365.24]
+  merged[alcoholAbuse == 1 , totDiagAlcoholAbuseAge := difftime(D_INDDTOTotDiagAlcoholAbuse , D_FODDATO , units = "days")/365.24]
+  merged[alcoholAbuse == 1 , oprDiagAlcoholAbuseAge := difftime(D_INDDTOOprDiagAlcoholAbuse , D_FODDATO , units = "days")/365.24]
+  merged[alcoholAbuse == 1 , opruDiagAlcoholAbuseAge := difftime(D_INDDTOOpruDiagAlcoholAbuse , D_FODDATO , units = "days")/365.24]
+  ##merged[ , table(aDiagAlcoholAbuseAge , useNA = "always")]
+  ##merged[ , table(totDiagAlcoholAbuseAge , useNA = "always")]
+  ##Since I have decided to put together alcohol and drug misuse, the contribution of person time has to stop at the first of one of those events. I thus only calculate the new timeSinceInclusion-variable after also marking all entries related to drug misuse. 
+  ##All others are coded as not abusing alcohol:
+  merged[is.na(alcoholAbuse) == TRUE , alcoholAbuse := 0]
+  merged[ , table(alcoholAbuse, useNA = "always")]
+
+  ##Now drug abuse: 
+  ##Reusing the function from alcohol abuse:
+  drugFunc <- function(data , variables , varLong , varShort) {
+      diagVar <- variables
+      ##Remove all irrelevant entries:
+      for (i in diagVar) {
+	  (data)[grepl("^D" , as.character(get(i))) == FALSE  , (i) := "NA"]
+      }
+      ##Reduce all diagnoses to only four digits:
+      for (i in diagVar) {
+	  (data)[ , (i) := substr(as.character(get(i)) , 2 , 5)]
+      }
+      ##Mark all with a diagnosis of drug abuse with 1 using varLong:
+      for (i in diagVar) {
+	  (data)[as.character(get(i)) %in% varLong , drugAbuse := 1]
+      }
+      ##Reduce all diagnoses to only three digits:
+      for (i in diagVar) {
+	  (data)[ , (i) := substr(as.character(get(i)) , 1 , 3)]
+      }
+      ##Mark all with a diagnosis of drug abuse with 1 using varShort:
+      for (i in diagVar) {
+	  (data)[as.character(get(i)) %in% varShort , drugAbuse := 1]
+      }
+      ##Remove all markings indicating a debut before 12 years of age ##This variable is currently not in use. Keeping it in case it's needed for a sensitivity analysis.
+      ##Merge with merged, take in child age and D_FODDTO:
+      mergedMerge <- merged[ , .(pnr , D_FODDATO)]
+      setkey(mergedMerge , pnr)
+      setkey((data) , pnr)
+      assign('data' , merge((data) , mergedMerge , all.x = TRUE))
+      ##Copy current markings to new variables:
+      (data)[ , drugAbuse12 := drugAbuse]
+      ##Delete markings of entries where the child is 12 or below:
+      (data)[difftime(D_INDDTO, D_FODDATO , units = "days")/365.24 < 12 , drugAbuse12 := NA]
+      ##Backup data for the above-12-variable:
+      assign("data12" , (data))
+      ##Reduce to one entry for each pnr, and only those who has been found to have drug abuse:
+      assign('data' , (data)[is.na(drugAbuse) == FALSE])
+      ##Ensuring the date of the first occurrence is kept; ordering after D_INDDTO, grouped by pnr:
+      assign('data' , (data)[order(D_INDDTO) , .SD , by = pnr])
+      assign('data' , (data)[ , duplicates := duplicated(pnr)])
+      assign('data' , (data)[duplicates == FALSE])
+      ##Reduce to only pnr, time of treatment(D_INDDTO and drugAbuse:
+      assign('data' , (data)[ , .(pnr , D_INDDTO , drugAbuse)])    
+      setkey((data) , pnr)
+      assign("merged" , merge(merged , (data) , all.x = TRUE) , .GlobalEnv)
+      ##Repeat the steps above for drugAbuse12:
+      ##Reduce to one entry for each pnr, and only those who has been found to have drug abuse:
+      assign("data12" , (data12)[is.na(drugAbuse12) == FALSE])
+      assign("data12" , (data12)[ , duplicates := duplicated(pnr)])
+      assign("data12" , (data12)[duplicates == FALSE])
+      ##Reduce to only pnr, time of treatment(D_INDDTO, alcoholAbuse and alcoholAbuse12:
+      assign("data12" , (data12)[ , .(pnr , drugAbuse12)])    
+      setkey((data12) , pnr)
+      assign("merged" , merge(merged , (data12) , all.x = TRUE) , .GlobalEnv)
+      return((NULL))
+  }
+  ##Get fresh datasets:
+  loadDiag()
+  ##Begin with aDiag:
+  drugFunc(aDiag , "C_ADIAG" , diagDrug , diagDrugShort)
+  setnames(merged , c("D_INDDTO" , "drugAbuse" , "drugAbuse12") , c("D_INDDTOADiagDrugAbuse" , "aDiagDrugAbuse" , "aDiagDrugAbuse12"))
+  ##View(merged)
+  ##Looks as expected. Will take a look on a few cases(pnr deleted, microdata):
+  loadDiag()
+  ##View(aDiag[pnr == "***"])
+  ##View(aDiag[pnr == "***"]) 
+  ##Tested a few pnrs; they were catched on three-digit codes, which has now been shown to work. Four-digit codes has been shown to work in all previous runs.
+  ##Now doing the same for totDiag:
+  ##First, adding pnr and D_INDDTO:
+  mPnr <- mPnr[ , .(k_recnum , pnr , D_INDDTO)]
+  setkey(mPnr , k_recnum)
+  setnames(totDiag , "v_recnum" , "k_recnum")
+  setkey(totDiag , k_recnum)
+  totDiag <- merge(totDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  totDiag <- totDiag[is.na(pnr) == FALSE]
+  ##Then, the same procedure as for aDiag:
+  drugFunc(totDiag , c("C_TILDIAG" , "C_DIAG") , diagDrug , diagDrugShort)
+  setnames(merged , c("D_INDDTO" , "drugAbuse" , "drugAbuse12") , c("D_INDDTOTotDiagDrugAbuse" , "totDiagDrugAbuse" , "totDiagDrugAbuse12"))
+  ##Now doing the same for oprDiag:
+  setnames(oprDiag , "v_recnum" , "k_recnum")
+  setkey(oprDiag , k_recnum)
+  oprDiag <- merge(oprDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  oprDiag <- oprDiag[is.na(pnr) == FALSE]
+  drugFunc(oprDiag , c("C_OPR" , "C_TILOPR") , diagDrug , diagDrugShort)
+  setnames(merged , c("D_INDDTO" , "drugAbuse" , "drugAbuse12") , c("D_INDDTOOprDiagDrugAbuse" , "oprDiagDrugAbuse" , "oprDiagDrugAbuse12"))
+  ##No relevant diagnoses found; program returns an error.
+  ##Now doing the same for opruDiag:
+  setnames(opruDiag , "v_recnum" , "k_recnum")
+  setkey(opruDiag , k_recnum)
+  opruDiag <- merge(opruDiag , mPnr , all.x = TRUE)
+  ##As only recnums after Indexdato are included, the next step actually deletes all observations prior to inclusion in the study:
+  opruDiag <- opruDiag[is.na(pnr) == FALSE]
+  drugFunc(opruDiag , c("C_OPR" , "C_TILOPR") , diagDrug , diagDrugShort)
+  setnames(merged , c("D_INDDTO" , "drugAbuse" , "drugAbuse12") , c("D_INDDTOOpruDiagDrugAbuse" , "opruDiagDrugAbuse" , "opruDiagDrugAbuse12"))
+  ##No relevant diagnoses found; program returns an error.
+  ##accidentDiag contains no data of relevance to alcohol or drug abuse.
+  merged[aDiagDrugAbuse == 1 |
+	 totDiagDrugAbuse == 1 |
+	 oprDiagDrugAbuse == 1 |
+	 opruDiagDrugAbuse == 1 ,
+	 drugAbuse := 1]
+  merged[aDiagDrugAbuse12 == 1 |
+	 totDiagDrugAbuse12 == 1 |
+	 oprDiagDrugAbuse12 == 1 |
+	 opruDiagDrugAbuse12 ,
+	 drugAbuse12 := 1]
+  ##Now all with a registered incident of abuse are correctly coded. All others are coded as non-abusers: 
+  merged[is.na(drugAbuse) == TRUE , drugAbuse := 0]
+  merged[is.na(drugAbuse12) == TRUE , drugAbuse12 := 0]
+  ##merged[ , table(drugAbuse, useNA = "always")]
+  ##Behaves as expected.
+
+  ##Define joint variable of Substance Misuse, indicating abuse of either alcohol or drugs:
+  merged[drugAbuse == 1 | alcoholAbuse == 1 , substanceMisuse := 1]
+  merged[drugAbuse12 == 1 | alcoholAbuse12 == 1 , substanceMisuse12 := 1]
+  ##Making a new timeSinceInclusionSubstanceMisuse enabling stopping person time when the first event, either alcohol- or drug-related, occurs:
+  merged[ , timeSinceInclusionSubstanceMisuse :=
+		difftime(pmin(D_INDDTOADiagDrugAbuse ,
+			      D_INDDTOADiagAlcoholAbuse ,
+			      D_INDDTOTotDiagDrugAbuse ,
+			      D_INDDTOTotDiagAlcoholAbuse ,
+			      D_INDDTOOprDiagDrugAbuse ,
+			      D_INDDTOOprDiagAlcoholAbuse ,
+			      D_INDDTOOpruDiagDrugAbuse ,
+			      D_INDDTOOpruDiagAlcoholAbuse , 
+			      na.rm = TRUE) ,
+			 Indexdato ,
+			 units = "days")/365.24]
+  ##View(merged[ , .(Indexdato , timeSinceInclusion , D_INDDTOADiagDrugAbuse , D_INDDTOADiagAlcoholAbuse , D_INDDTOTotDiagDrugAbuse , D_INDDTOTotDiagAlcoholAbuse , timeSinceInclusionSubstanceMisuse , substanceMisuse)])
+  ##Behaves as expected. For all with substanceMisuse == 1 there is an entry, it is always positive, always derived from the lowest date observed and always lower than the timeSinceInclusion. 
+  ##For all who has not done substance misuse, assigning their full observation time as offset:
+  merged[is.na(substanceMisuse) == TRUE , timeSinceInclusionSubstanceMisuse := timeSinceInclusion]
+  ##Removing the faulty description of days:
+  merged[ , timeSinceInclusionSubstanceMisuse := as.numeric(timeSinceInclusionSubstanceMisuse)]
+  ##Assuming no entry means no registered abuse needing hospital treatment:
+  merged[is.na(substanceMisuse) == TRUE , substanceMisuse := 0]
+  ##View(merged[ , .(Indexdato , timeSinceInclusion , timeSinceInclusionSubstanceMisuse , substanceMisuse)])
+  ##Looks as expected.
+
+  ##Define no of offspring:
+  ##Delete entries with births before inclusion:
+  for (i in 1:6) {
+      merged[difftime(get(noquote(paste0("foedselsdato" , i))) , Indexdato) < 0 , noquote(paste0("foedselsdato" , i)) := NA]
+  }
+  ##Count number of offspring:
+  merged[ , noOffspring := as.numeric(!is.na(foedselsdato1))+as.numeric(!is.na(foedselsdato2))+as.numeric(!is.na(foedselsdato3))+as.numeric(!is.na(foedselsdato4))+as.numeric(!is.na(foedselsdato5))+as.numeric(!is.na(foedselsdato6))] 
+  ##View(merged[ , .(foedselsdato1 , foedselsdato2 , foedselsdato3 , foedselsdato4 , foedselsdato5 , foedselsdato6 , noOffspring)])
+  ##Behaves as expected
+
+  ##Generate variable with a date of their 16th birthday:
+  merged[ , birthday16 := D_FODDATO + (16 * 365.24)]
+  ##View(merged[ , .(D_FODDATO , birthday16)])
+
+  ##Check if anyone gives birth for the first time before they are 16 years old:
+  merged[difftime(foedselsdato1 , birthday16 , units ="days") < 0 , before16 := 1]
+  merged[ , table(before16)]
+  ##This produces an error - there are no births before anyone's 16th birthday.
+
+  ##Using 16 as a cutoff for first possible childbirth, offset is defined for childbirth, being observation time during which the child is 16 or older:
+  merged[ , timeSinceInclusionNoOffspring := timeSinceInclusion - (16 - ageAtInclusion)]
+
+  ##Generating new variables for analyses with low N:
+
+  merged[tro_childabuse != 0 , childAbuseDicho := 1]
+  merged[tro_childabuse == 0 , childAbuseDicho := 0]
+  ##merged[ , table(childAbuseDicho , useNA = "always")]
+  ##Behaves as expected.
+
+  merged[motherEducLevel >= 2 , motherEducLevelDicho := 1]
+  merged[motherEducLevel < 2 , motherEducLevelDicho := 0]
+  ##merged[ , table(motherEducLevelDicho)]
+  ##Behaves as expected.
+
+  ##Prepare the produced variables for analysis:
+  merged[ , tro_childabuse := factor(tro_childabuse , labels = c("No abuse" , "Physical abuse" , "Sexual abuse" , "Other" , "Multiple types of abuse"))]
+
+  merged[ , childAbuseDicho := factor(childAbuseDicho , labels = c("No abuse" , "Child abuse"))]
+
+  merged[ , selfHarmF := factor(selfHarm , labels = c("No self-harm" , "Non-fatal self-harm"))]
+
+  merged[ , substanceMisuseF := factor(substanceMisuse , labels = c("No substance misuse" , "Substance misuse"))]
+
+  merged[ , ageAtInclusionGrouped := factor(ageAtInclusionGrouped , labels = c("0 - 3 years" , "4 - 7 years" , "8 - 11 years" , "12 - 16 years"))]
+
+  merged[ , motherEducLevel := factor(motherEducLevel , labels = c("Less than primary or missing data" , "Primary level" , "Secondary level" , "Higher certificate, degree level or higher"))]
+
+  merged[ , motherEducLevelDicho := factor(motherEducLevelDicho , labels = c("Primary level or missing data" , "Secondary level or more"))]
+
+  merged[ , separationBeforeInclusion := factor(separationBeforeInclusion , labels= c("No separation of parents" , "Separation of parents"))]
+
+  merged[ , gender := factor(gender , labels = c("Male" , "Female"))]
+
+
+  ##Reduce merged to only those variables needed for the analysis:
+  mergedAnalysis <- merged[ , .(tro_childabuse , childAbuseDicho , SchoolNonatt , selfHarm , selfHarmF , deathSelfHarm , alcoholAbuse , drugAbuse , substanceMisuse , substanceMisuseF , noOffspring , ageAtInclusion , ageAtInclusionGrouped , timeSinceInclusion , timeSinceInclusionSelfHarm , timeSinceInclusionSubstanceMisuse , timeSinceInclusionNoOffspring , timeSinceInclusionSchoolNonatt , motherEducLevel , motherEducLevelDicho , separationBeforeInclusion , gender)]
+
+  ##For some reason, org-mode fails when I try to load the data into memory in the "data"-session. Thus, I save the data to a file and reload it in the next code block:
+  save(mergedAnalysis , file = "mergedAnalysisTest.RData")
+#+end_src
+
+* Variable documentation
+| Predictors                                                | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Name in dataset                |
+|-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------|
+|                                                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |                                |
+| Child abuse                                               | 0: no abuse, 1: physical abuse, 2: sexual abuse, 3: other, 6: more than one type. Has so far put Munchausen by Proxy and threaths of death in "other" instead of physical abuse.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | tro_childabuse                 |
+| Child abuse dichotomized                                  | 0: no abuse, 1: abuse of any kind                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | childAbuseDicho                |
+| Age at inclusion(controls matched on date of first abuse) | Indexdato - D_FODDATO                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ageAtInclusion                 |
+| Age at inclusion grouped                                  | 1: 0-4 years, 2: 4-8 years, 3: 8-12 years , 4: 12-16 years                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | ageAtInclusionGrouped          |
+| Years since first abuse                                   | Time since inclusion date, adjusted for death                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | timeSinceInclusion             |
+| Offset for school non-attendance                          | Offset by how many years are measured for non-attendance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | timeSinceInclusionSchoolNonatt |
+| Offset for number of offspring                            | Offset by how many years the child is 16 or more during the observed time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | timeSinceInclusionNoOffspring  |
+| Mother's educational level                                | 0:missing, 1: primary, 2: secondary, 3: higher certificate, degree level or higher Have consulted Statistics Denmark in how to interpret missing values. There is some chance that missing could imply not completed 9th grade - but also that missing would indicate missing data. Thus, the category includes both some random missing observations and some individuals with a low educational level.                                                                                                                                                                                                                                     | motherEducLevel T              |
+| Mother's educational level dichotomized                   | 0: Less than secondary education or no record 1: Secondary education or more                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | motherEducLevelDicho           |
+| Divorced at inclusion                                     | 0: no, 1: yes As divorce can take place at many points in time, several definitions can be chosen - I choose to aim for divorces that are present at inclusion, and happened after the child was born. The reason for excluding divorces occurring after inclusion is that problems with child development could affect the risk of divorce - and vice versa, thus creating a hen-and-egg situation. This is not avoided fully by this method, as a divorce before inclusion may be the result of bad child well-being, or influenced by a covariate also influencing child well-being. This weakness should be acknowledged in the article. | separationBeforeInclusion TT   |
+| Parent or parent's spouse dead at inclusion               | 0: no, 1: yes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | deathBeforeInclusion           |
+| Gender                                                    | 0: Male, 1: Female                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | gender                         |
+
+
+
+| Outcomes              | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Name in dataset |
+|-----------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------------|
+| School non-attendance | Sum of of days of non-attendance for all months counted since inclusion.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | SchoolNonatt T  |
+| Self-harm             | 0: No self-harm, 1: Non-fatal self-harm, Will include referral diagnoses; this will probably result in a few false positives, but also ensure that wounds referred as self-harm but for example treated as wounds only, are correctly included as self-harm. Diagnoses used: "X60" , "X61" , "X62" , "X63" , "X64" , "X65" , "X66" , "X67", "X68" , "X69" , "X70" , "X71" , "X72" , "X73" ,"X74" , "X75" , "X76" , "X77" , "X78" , "X79" , "X80" , "X81" , "X82" , "X83" , "X84" , "Y87"                                                                                                                                                                                                                                                                                                  | selfHarm        |
+| Fatal self-harm       | 0: No fatal self-harm, 1: Fatal self-harm                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | deathSelfHarm   |
+| Alcohol misuse        | 0: No misuse, 1: 1 or more incidents of harmful alcohol consumption. Assuming that if you receive an F-diagnosis of alcohol, you are consuming too much or in a pathological manner - except alcohol psychosis, which may be the result of something hereditary. Some diagnoses, such as T51, is not necessarily dependant on ethanol, but can be a number of other alcohols. Thus, only those subspecified with an additional digit will be recorded. D519, unspecified alcohol intoxication, will be included as well, as it is assumed that it refers to ethanol. Only severe intoxication are included. Diagnoses expected to represent "normal" use of alcohol, eg. perhaps someone got a scratch while mildly intoxicated and received help in an emergency room, are not included. | alcoholAbuse    |
+| Drug misuse           | 0: No misuse, 1: 1 or more incident(s) of consumption of illegal drugs, or abuse of harmful substances.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | drugAbuse       |
+| Substance misuse      | 0: No misuse, 1: 1 or more counts of misuse of either alcohol or drugs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | substanceMisuse |
+| Number of children    | Discrete count of children                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | noOffspring     |
+
+
+
+
+
+| Additional variables | Definition                           | Name in dataset |
+|----------------------+--------------------------------------+-----------------|
+| Pnr duplicates       | Pnr's appearing twice in the dataset | duplicated      |
+| Birthdate            | Merged from t_person_total           | D_FODDATO       |
+
+* Analysis plans
+** School non-attendance
+For all children, there are at least 1000 days between the abuse and the first account of school attendance-statistics. To avoid mixing exposure to abuse from different ages, giving participants a very uneven number of years between inclusion and start of school, analyses are stratified on age groups, and the only age groups with sufficient observations for analysis are 0-3 and 4-7 year olds, N being 401 and 410. There are 61 cases with observations in the 0-3 year-group and 51 cases in the 4-7 year-group. To limit underpowering in the analysis, only the most important factors will be adjusted for. Child abuse is reduced to a dichotomous variable, as well as mother's educational level. Separation before inclusion is dichotomized by definition. In addition, gender will be adjusted for - thus, 4 explanatory variables for 50-60 cases with observations. 
+*** Analysis plans 
+
+| Independent variables     | Dependent variable |
+|---------------------------+--------------------|
+| childAbuseDicho           | SchoolNonatt       |
+| motherEducLevelDicho      |                    |
+| separationBeforeInclusion |                    |
+
+Negative binomial regression will be used, thus taking into account the skewed nature of the outcome variable. The results will be offset by observation time during school, using timeSinceInclusionSchoolNonatt. This will result in relative risks for a given risk-year. Analyses will be stratified on age groups 0-3 years at inclusion and 4-7 years at inclusion.  
+*** Code
+#+begin_src R :session data :results silent
+  library(MASS)
+  library(data.table)
+  setwd("D:/data/Workdata/706927/Arbejdsdata")
+  load("mergedAnalysis.RData")
+  nbSchoolNonatt03 <- glm.nb(SchoolNonatt ~ childAbuseDicho + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSchoolNonatt)) , data = mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" & is.na(SchoolNonatt) == FALSE])
+  summary(nbSchoolNonatt03)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogSchoolNonatt03 <- cbind(Estimate = coef(nbSchoolNonatt03) , confint(nbSchoolNonatt03))
+  ##The results in RR and with p-values:
+  exportSchoolNonatt03 <- cbind(exp(estLogSchoolNonatt03) , coef(summary(nbSchoolNonatt03))[ , 4])
+  exportSchoolNonatt03
+  ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
+  lci <- nbSchoolNonatt03$theta - nbSchoolNonatt03$SE.theta * 1.96
+  uci <- nbSchoolNonatt03$theta + nbSchoolNonatt03$SE.theta * 1.96
+  alphaSchoolNonatt03 <- cbind(Alpha = (nbSchoolNonatt03$theta^-1) , LowerCI = (lci^-1) , UpperCI = (uci^-1))
+  alphaSchoolNonatt03
+
+  nbSchoolNonatt47 <- glm.nb(SchoolNonatt ~ childAbuseDicho + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSchoolNonatt)), data = mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" & is.na(SchoolNonatt) == FALSE])
+  summary(nbSchoolNonatt47)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogSchoolNonatt47 <- cbind(Estimate = coef(nbSchoolNonatt47) , confint(nbSchoolNonatt47))
+  ##The results in RR and with p-values:
+  exportSchoolNonatt47 <- cbind(exp(estLogSchoolNonatt47) , coef(summary(nbSchoolNonatt47))[ , 4])
+  exportSchoolNonatt47
+  ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
+  lci <- nbSchoolNonatt47$theta - nbSchoolNonatt47$SE.theta * 1.96
+  uci <- nbSchoolNonatt47$theta + nbSchoolNonatt47$SE.theta * 1.96
+  alphaSchoolNonatt47 <- cbind(Alpha = (nbSchoolNonatt47$theta^-1) , LowerCI = (lci^-1) , UpperCI = (uci^-1))
+  alphaSchoolNonatt47
+#+end_src
+
+** Self-harm
+To avoid including age groups in which self-harm is highly unlikely and ensure the same time between abuse and outcome for all participants, only children at the age of 7 at inclusion are included in the analysis. This gives 1711 subjects available for analysis. In this dataset, only 38 cases of self-harm is available, with a sufficient number of incidents in both cases and controls. Taking into account the low number of incidents, only gender, age and, as separation has been a sampling criterion, separation before inclusion will be adjusted for, and abuse will be a dichotomous variable. If the model fails to converge or presents with unreasonably wide confidence intervals because of power, an analysis without separation will be performed on cases and subjects from Kontrol2, the group drawn from the background population and thus not selected on separation status. Offset is the observed person time, stopping either at last draw of study data or when self-harm happens for the first time. 
+*** Analysis plans 
+
+| Independent variables     | Dependent variable |
+|---------------------------+--------------------|
+| childAbuseDicho           | selfHarm           |
+| ageAtInclusion            |                    |
+| gender                    |                    |
+| separationBeforeInclusion |                    |
+
+*** Code
+#+begin_src R :session data :results silent
+  nbSelfHarm <- glm.nb(selfHarm ~ childAbuseDicho + ageAtInclusion + gender + separationBeforeInclusion + offset(log(timeSinceInclusionSelfHarm)) , data = mergedAnalysis[ageAtInclusion >= 7])
+  summary(nbSelfHarm)
+  ##Warns that iteration limit is reached. Fitting Poisson regression instead:
+  poSelfHarm <- glm(selfHarm ~ childAbuseDicho + ageAtInclusion + gender + separationBeforeInclusion + offset(log(timeSinceInclusionSelfHarm)) , family = poisson , data = mergedAnalysis[ageAtInclusion >= 7])
+  summary(poSelfHarm)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogSelfHarm <- cbind(Estimate = coef(poSelfHarm) , confint(poSelfHarm))
+  ##The results in RR and with p-values:
+  exportSelfHarm <- cbind(exp(estLogSelfHarm) , coef(summary(poSelfHarm))[ , 4])
+  exportSelfHarm
+#+end_src
+** Substance misuse
+For similar reasons as stated above for self-harm, only children at the age of 10 or more at inclusion are analysed here. There are 1399 observations in this subset with 112 cases of substance misuse, distributed acceptably across cases and controls. A grouped version of the abuse variable will be used, age at inclusion will be included as a continous variable and the model will be adjusted for mother's educational level as a dichotomized variable, gender and separation before inclusion. Offset is the observed person time, stopping either at last draw of study data or when substance misuse happens for the first time.
+*** Analysis plans 
+
+| Independent variables     | Dependent variable |
+|---------------------------+--------------------|
+| tro_childabuse            | substanceMisuse    |
+| gender                    |                    |
+| ageAtInclusion            |                    |
+| motherEducLevelDicho      |                    |
+| separationBeforeInclusion |                    |
+
+*** Code
+#+begin_src R :session data :results silent
+  ##nbSubstanceMisuse <- glm.nb(substanceMisuse ~ tro_childabuse + ageAtInclusion + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSubstanceMisuse)) , data = mergedAnalysis[ageAtInclusion >=10 & timeSinceInclusionSubstanceMisuse > 0])
+  ##This produces a strange error indicating that substanceMisuse has missing values or infinitely big values. This holds true when na.action is set to na.omit. It also produces a warning that iterations causes divergence. This was discussed with a statistician and we concluded that the most likely explanation was that the math behind the regression was failing on the present data. He advised to fall back on Poisson regression. I thus proceed to Poisson regression, which computes with no errors.
+  ##summary(nbSubstanceMisuse)
+  ##Defaulting to Poisson-regression:
+  poSubstanceMisuse <- glm(substanceMisuse ~ tro_childabuse + ageAtInclusion + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSubstanceMisuse)) , family = poisson , data = mergedAnalysis[ageAtInclusion >=10 & timeSinceInclusionSubstanceMisuse > 0])
+  summary(poSubstanceMisuse)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogSubstanceMisuse <- cbind(Estimate = coef(poSubstanceMisuse) , confint(poSubstanceMisuse))
+  ##The results in RR and with p-values:
+  exportSubstanceMisuse <- cbind(exp(estLogSubstanceMisuse) , coef(summary(poSubstanceMisuse))[ , 4])
+  exportSubstanceMisuse
+
+#+end_src
+** Number of offspring
+There are 346 observations with number of offspring higher than zero. To avoid including a large number of children highly likely to not yet be pregnant, the analysis is restricted to only those who reach the age of 16 during the observation period, comprising 2078 individuals with 342 births. Additionally, the analysis is restricted to girls; boys could also be thought to make families at an early stage, but we did not have data on their partners, and such data are unlikely to exist in good quality as many underaged couples would not yet be registered in the public registries unless they are married, which requires special permissions in Denmark. To avoid large differences between the time between exposure and outcome, the analysis is stratified on age groups. The group of girls between 8 and 11 years at inclusion contain 382 children, 45 cases of abuse and 47 with offspring. This only allows for an analysis with the minimal set of covariates as used in the analysis of self-harm. The group of girls between 12 and 16 years contain 1053 children, 151 cases of child abuse and 292 with offspring. This allows for a more detailed analysis, using the available relevant control variables. 
+*** Analysis plan 
+
+For 8-11-year olds:
+| Independent variables     | Dependent variable |
+|---------------------------+--------------------|
+| childAbuseDicho           | noOffspring        |
+| gender                    |                    |
+| separationBeforeInclusion |                    |
+
+For 12-16-year olds:
+| Independent variables     | Dependent variable |
+|---------------------------+--------------------|
+| tro_childabuse            | noOffspring        |
+| gender                    |                    |
+| motherEducLevel           |                    |
+| separationBeforeInclusion |                    |
+
+*** Code
+#+begin_src R :session data :results silent
+  nbNoOffspringGirls811 <- glm.nb(noOffspring ~ childAbuseDicho + separationBeforeInclusion + offset(log(timeSinceInclusionNoOffspring)) , data = mergedAnalysis[timeSinceInclusionNoOffspring >= 0 & ageAtInclusionGrouped == "8 - 11 years" & gender == "Female"])
+  summary(nbNoOffspringGirls811)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogNoOffspringGirls811 <- cbind(Estimate = coef(nbNoOffspringGirls811) , confint(nbNoOffspringGirls811))
+  ##The results in RR and with p-values:
+  exportNoOffspringGirls811 <- cbind(exp(estLogNoOffspringGirls811) , coef(summary(nbNoOffspringGirls811))[ , 4])
+  exportNoOffspringGirls811
+  ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
+  lci <- nbNoOffspringGirls811$theta - nbNoOffspringGirls811$SE.theta * 1.96
+  uci <- nbNoOffspringGirls811$theta + nbNoOffspringGirls811$SE.theta * 1.96
+  alphaNoOffspringGirls811 <- cbind(Alpha = (nbNoOffspringGirls811$theta^-1) , LowerCI = (lci^-1) , UpperCI = (uci^-1))
+  alphaNoOffspringGirls811
+
+
+  nbNoOffspringGirls1216 <- glm.nb(noOffspring ~ tro_childabuse + motherEducLevel + separationBeforeInclusion + offset(log(timeSinceInclusionNoOffspring)), data = mergedAnalysis[timeSinceInclusionNoOffspring >= 0 & ageAtInclusionGrouped == "12 - 16 years" & gender == "Female"])
+  summary(nbNoOffspringGirls1216)
+  ##Output given in natural logarithmic numbers. 
+  ##Calculating RR and confidence intervals:
+  estLogNoOffspringGirls1216 <- cbind(Estimate = coef(nbNoOffspringGirls1216) , confint(nbNoOffspringGirls1216))
+  ##The results in RR and with p-values:
+  exportNoOffspringGirls1216 <- cbind(exp(estLogNoOffspringGirls1216) , coef(summary(nbNoOffspringGirls1216))[ , 4])
+  exportNoOffspringGirls1216
+  ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
+  lci <- nbNoOffspringGirls1216$theta - nbNoOffspringGirls1216$SE.theta * 1.96
+  uci <- nbNoOffspringGirls1216$theta + nbNoOffspringGirls1216$SE.theta * 1.96
+  alphaNoOffspringGirls1216 <- cbind(Alpha = (nbNoOffspringGirls1216$theta^-1) , LowerCI = (lci^-1) , UpperCI = (uci^-1))
+  alphaNoOffspringGirls1216
+#+end_src
+
+* Exported results 
+
+#+begin_src R :session data :results output :exports both
+  print("School Nonattendance ages 0-3 years")
+  exportSchoolNonatt03
+  alphaSchoolNonatt03
+  summary(nbSchoolNonatt03)
+  print("School Nonattendance ages 4-7 years")
+  exportSchoolNonatt47
+  alphaSchoolNonatt47
+  summary(nbSchoolNonatt47)
+  print("Any diagnosis of non-fatal self-harm amongst children aged 7 or more")
+  exportSelfHarm
+  summary(poSelfHarm)
+  print("Any diagnosis of substance misuse amongst children aged 10 or more")
+  exportSubstanceMisuse
+  summary(poSubstanceMisuse)
+  print("Births amongst girls age 8-11 at inclusion")
+  exportNoOffspringGirls811
+  alphaNoOffspringGirls811
+  summary(nbNoOffspringGirls811)
+  print("Births amongst girls age 12-16 at inclusion")
+  exportNoOffspringGirls1216
+  alphaNoOffspringGirls1216
+  summary(nbNoOffspringGirls1216)
+#+end_src
+* Overview tables and some missing numbers, following up for article
+#+begin_src R :session data :results output :exports both
+  ##Table for demographics
+  temp <- data.table(categoryNames = c("Male" ,
+				       "Female" ,
+				       "Less than primary or missing data" ,
+				       "Primary level" ,
+				       "Secondary level" ,
+				       "Higher certificate, degree level or higher" ,
+				       "No separation of parents" ,
+				       "Separation of parents") ,
+		     zeroToThree = c(
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					gender == "Male" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					gender == "Female" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					motherEducLevel == "Less than primary or missing data" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					motherEducLevel == "Primary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					motherEducLevel == "Secondary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					separationBeforeInclusion == "No separation of parents" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+					separationBeforeInclusion == "Separation of parents" , .N]) ,
+		     fourToSeven = c(
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					gender == "Male" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					gender == "Female" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					motherEducLevel == "Less than primary or missing data" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					motherEducLevel == "Primary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					motherEducLevel == "Secondary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					separationBeforeInclusion == "No separation of parents" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+					separationBeforeInclusion == "Separation of parents" , .N]) ,
+		     eightToEleven = c(
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					gender == "Male" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					gender == "Female" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					motherEducLevel == "Less than primary or missing data" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					motherEducLevel == "Primary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					motherEducLevel == "Secondary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					separationBeforeInclusion == "No separation of parents" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					separationBeforeInclusion == "Separation of parents" , .N]) ,
+		     twelveToSixteen = c(
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					gender == "Male" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					gender == "Female" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					motherEducLevel == "Less than primary or missing data" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					motherEducLevel == "Primary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					motherEducLevel == "Secondary level" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					separationBeforeInclusion == "No separation of parents" , .N] ,
+			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					separationBeforeInclusion == "Separation of parents" , .N]))
+  fwrite(temp , "countsTable1.csv")
+
+  ##The histogram of the counts of non-attendance looks strange - I looked back into the code and this seems to originate from the way non-attendance is registered. This is monthly registrations from the schools - it makes sense that most children have a set number of full years, and that some are excluded or included in the school system at some point.
+
+  ##Producing medians and participants for all analyses:
+  temp <- data.table(analyses = c("Substance abuse" ,
+				  "Severe, non-suicidal self-injury" ,
+				  "School absenteeism 0-3" ,
+				  "School absenteeism 4-7" ,
+				  "Early pregnancy 8-11" ,
+				  "Early pregnancy 12-16") ,
+		     cases = c(mergedAnalysis[ageAtInclusion >= 10 &
+					      timeSinceInclusionSubstanceMisuse > 0 &
+					      substanceMisuse == 1 , .N] ,
+			       mergedAnalysis[ageAtInclusion >= 7 &
+					      timeSinceInclusionSelfHarm > 0 &
+					      selfHarmF == "Non-fatal self-harm" , .N] ,
+			       NA ,
+			       NA ,
+			       mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+					      timeSinceInclusionNoOffspring > 0 &
+					      gender == "Female" &
+					      noOffspring > 0 , .N] ,
+			       mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+					      timeSinceInclusionNoOffspring > 0 &
+					      gender == "Female" &
+					      noOffspring > 0 , .N]) ,
+		     participants = c(mergedAnalysis[ageAtInclusion >= 10 &
+						     timeSinceInclusionSubstanceMisuse > 0 ,
+						     .N] ,
+				      mergedAnalysis[ageAtInclusion >= 7 &
+						     timeSinceInclusionSelfHarm > 0  ,
+						     .N] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+						     !is.na(SchoolNonatt) &
+						     timeSinceInclusionSchoolNonatt > 0 ,
+						     .N] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+						     !is.na(SchoolNonatt) &
+						     timeSinceInclusionSchoolNonatt > 0 ,
+						     .N] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+						     timeSinceInclusionNoOffspring > 0 &
+						     gender == "Female" ,
+						     .N] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+						     timeSinceInclusionNoOffspring > 0 &
+						     gender == "Female" ,
+						     .N]) ,
+		     medianContributedRiskTime = c(mergedAnalysis[ageAtInclusion >= 10 &
+								  timeSinceInclusionSubstanceMisuse > 0 ,
+								  median(timeSinceInclusionSubstanceMisuse , type = 7)] ,
+						   mergedAnalysis[ageAtInclusion >= 7 &
+								  timeSinceInclusionSelfHarm > 0  ,
+								  median(timeSinceInclusionSelfHarm , type = 7)] ,
+						   mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
+								  !is.na(SchoolNonatt) &
+								  timeSinceInclusionSchoolNonatt > 0 ,
+								  median(timeSinceInclusionSchoolNonatt , type = 7)] , 
+						   mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
+								  !is.na(SchoolNonatt) &
+								  timeSinceInclusionSchoolNonatt > 0 ,
+								  median(timeSinceInclusionSchoolNonatt , type = 7)] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+						     timeSinceInclusionNoOffspring > 0 &
+						     gender == "Female" ,
+						     median(timeSinceInclusionNoOffspring , type = 7)] ,
+				      mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+						     timeSinceInclusionNoOffspring > 0 &
+						     gender == "Female" ,
+						     median(timeSinceInclusionNoOffspring , type = 7)]))
+  fwrite(temp , "participantsCasesAndMedians.csv")
+
+  ##Table of missings in school non-attendance data:
+
+  mergedAnalysis[is.na(SchoolNonatt) , isMissingSchool := 1]
+  temp <- mergedAnalysis[ ,table(isMissingSchool , ageAtInclusionGrouped , useNA = "always")]
+  fwrite(data.table(temp) , "missingsSchoolNonatt.csv")
+
+#+end_src
