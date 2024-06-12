@@ -4,7 +4,7 @@
 #+OPTIONS: p:nil pri:nil prop:nil stat:t tags:t tasks:t tex:t
 #+OPTIONS: timestamp:t title:t toc:t todo:t |:t
 #+TITLE: Analysis
-#+AUTHOR: Troels Græsholt-Knudsen
+#+AUTHOR: Troels GrÃ¦sholt-Knudsen
 #+LANGUAGE: en
 #+SELECT_TAGS: export
 #+EXCLUDE_TAGS: noexport
@@ -26,7 +26,7 @@ This is the documentation for an analysis of a registry-based follow-up of cases
   ##View(merged)
   merged <- data.table(merged)
 
-  ##Preserve the data and remove duplicates on 11 pnr's that are currently not unique:
+  ##Preserve the data and remove duplicates on 11 pnrs that are currently not unique:
   ##Sort on pnr:
   setkey(merged , pnr)
   ##Mark duplicates
@@ -89,7 +89,7 @@ This is the documentation for an analysis of a registry-based follow-up of cases
   }
   ##View(merged[1:300 , .(tro_childabuse , an_ovgr_art_1 , ovgr_art_1_1 , ovgr_art_2_1 , ovgr_art_3_1 , ovgr_art_4_1 , ovgr_art_5_1 , ovgr_art_6_1 , ovgr_art_7_1 , ovgr_art_8_1)])
   ##Behaves as expected; introduced errors from previous step are also corrected.
-  ##As a table of the used codes reveals very few entries with 30.* and 40.*, these are both categorised as "other".
+  ##30.* and 40.* are collapsed to "other".
   ##Assign tro_childabuse == othe to all observations with at least one instance of 30.* or 40.* or 108.* (Munchhausen) or 109.*(threat of death) .
   for (i in grep("^ovgr_art" , names(merged) , value = TRUE)) {
       merged[like(as.character(get(i)) , "30.*") == TRUE | like(as.character(get(i)) , "40.*") == TRUE | like(as.character(get(i)) , "108.*") == TRUE | like(as.character(get(i)) , "109.*") == TRUE, tro_childabuse := othe]
@@ -170,7 +170,7 @@ This is the documentation for an analysis of a registry-based follow-up of cases
   ##View(merged[ , .(Indexdato , timeSinceInclusion)])
   ##merged[ , hist(timeSinceInclusion)]
   ##merged[ , range(timeSinceInclusion)]
-  ##Carries the expected format, fits with manual controls. As the exposed time varies between 9 and 15 years, negative binomial regression with offset will be used.
+  ##Carries the expected format, fits with manual controls. As the exposed time varies with several years, negative binomial regression with offset will be used.
   merged[ ageAtInclusion >= 0 & ageAtInclusion < 4 , ageAtInclusionGrouped := 1]
   merged[ ageAtInclusion >= 4 & ageAtInclusion < 8 , ageAtInclusionGrouped := 2]
   merged[ ageAtInclusion >= 8 & ageAtInclusion < 12 , ageAtInclusionGrouped := 3]
@@ -493,7 +493,7 @@ This is the documentation for an analysis of a registry-based follow-up of cases
   merged <- merge(merged , deathCause , all.x = TRUE)
   ##View(merged[ , .(pnr , Indexdato , D_STATDATO , deathSelfHarm)])
   ##View(merged[deathSelfHarm == 2 , .(pnr , Indexdato , D_STATDATO , deathSelfHarm)])
-  ##All looks as expected, only very few values not missing (that is, very few suicides in the samples).
+  ##All looks as expected.
   ##Assuming that no registered suicide means no fatal self-harm:
   merged[is.na(deathSelfHarm) == TRUE , deathSelfHarm := 0]
   ##Retrieving data to look for non-fatal self-harm:
@@ -855,7 +855,7 @@ This is the documentation for an analysis of a registry-based follow-up of cases
   merged[alcoholAbuse == 1 , opruDiagAlcoholAbuseAge := difftime(D_INDDTOOpruDiagAlcoholAbuse , D_FODDATO , units = "days")/365.24]
   ##merged[ , table(aDiagAlcoholAbuseAge , useNA = "always")]
   ##merged[ , table(totDiagAlcoholAbuseAge , useNA = "always")]
-  ##Since I have decided to put together alcohol and drug misuse, the contribution of person time has to stop at the first of one of those events. I thus only calculate the new timeSinceInclusion-variable after also marking all entries related to drug misuse. 
+  ##Since I have decided to put together alcohol and drug misuse, the contribution of person time has to stop at the first of one of those events. I thus only calculate the timeSinceInclusion new-variable after also marking all entries related to drug misuse. 
   ##All others are coded as not abusing alcohol:
   merged[is.na(alcoholAbuse) == TRUE , alcoholAbuse := 0]
   merged[ , table(alcoholAbuse, useNA = "always")]
@@ -1066,7 +1066,6 @@ This is the documentation for an analysis of a registry-based follow-up of cases
 * Variable documentation
 | Predictors                                                | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Name in dataset                |
 |-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------|
-|                                                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |                                |
 | Child abuse                                               | 0: no abuse, 1: physical abuse, 2: sexual abuse, 3: other, 6: more than one type. Has so far put Munchausen by Proxy and threaths of death in "other" instead of physical abuse.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | tro_childabuse                 |
 | Child abuse dichotomized                                  | 0: no abuse, 1: abuse of any kind                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | childAbuseDicho                |
 | Age at inclusion(controls matched on date of first abuse) | Indexdato - D_FODDATO                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ageAtInclusion                 |
@@ -1121,12 +1120,17 @@ Negative binomial regression will be used, thus taking into account the skewed n
   load("mergedAnalysis.RData")
   nbSchoolNonatt03 <- glm.nb(SchoolNonatt ~ childAbuseDicho + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSchoolNonatt)) , data = mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" & is.na(SchoolNonatt) == FALSE])
   summary(nbSchoolNonatt03)
-  ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogSchoolNonatt03 <- cbind(Estimate = coef(nbSchoolNonatt03) , confint(nbSchoolNonatt03))
-  ##The results in RR and with p-values:
-  exportSchoolNonatt03 <- cbind(exp(estLogSchoolNonatt03) , coef(summary(nbSchoolNonatt03))[ , 4])
-  exportSchoolNonatt03
+  ##Due to sensible reviewer comments requesting robust standard errors, results are re-calculated with such standard errors (code for functions are in self-harm code block):
+
+  ## ##Output given in natural logarithmic numbers. 
+  ## ##Calculating RR and confidence intervals:
+  ## estLogSchoolNonatt03 <- cbind(Estimate = coef(nbSchoolNonatt03) , confint(nbSchoolNonatt03))
+  ## ##The results in RR and with p-values:
+  ## exportSchoolNonatt03 <- cbind(exp(estLogSchoolNonatt03) , coef(summary(nbSchoolNonatt03))[ , 4])
+  ## exportSchoolNonatt03
+  ##Converting to robust standard errors:
+  exportSchoolNonatt03 <- robustIRR(nbSchoolNonatt03 , regressionType = "negativeBinomial")
+  write.csv(exportSchoolNonatt03 , "exportSchoolNonatt03.csv")
   ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
   lci <- nbSchoolNonatt03$theta - nbSchoolNonatt03$SE.theta * 1.96
   uci <- nbSchoolNonatt03$theta + nbSchoolNonatt03$SE.theta * 1.96
@@ -1135,12 +1139,15 @@ Negative binomial regression will be used, thus taking into account the skewed n
 
   nbSchoolNonatt47 <- glm.nb(SchoolNonatt ~ childAbuseDicho + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSchoolNonatt)), data = mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" & is.na(SchoolNonatt) == FALSE])
   summary(nbSchoolNonatt47)
-  ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogSchoolNonatt47 <- cbind(Estimate = coef(nbSchoolNonatt47) , confint(nbSchoolNonatt47))
-  ##The results in RR and with p-values:
-  exportSchoolNonatt47 <- cbind(exp(estLogSchoolNonatt47) , coef(summary(nbSchoolNonatt47))[ , 4])
-  exportSchoolNonatt47
+  ## ##Output given in natural logarithmic numbers. 
+  ## ##Calculating RR and confidence intervals:
+  ## estLogSchoolNonatt47 <- cbind(Estimate = coef(nbSchoolNonatt47) , confint(nbSchoolNonatt47))
+  ## ##The results in RR and with p-values:
+  ## exportSchoolNonatt47 <- cbind(exp(estLogSchoolNonatt47) , coef(summary(nbSchoolNonatt47))[ , 4])
+  ## exportSchoolNonatt47
+  ##Converting to robust standard errors:
+  exportSchoolNonatt47 <- robustIRR(nbSchoolNonatt47 , regressionType = "negativeBinomial")
+  write.csv(exportSchoolNonatt47 , "exportSchoolNonatt47.csv")
   ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
   lci <- nbSchoolNonatt47$theta - nbSchoolNonatt47$SE.theta * 1.96
   uci <- nbSchoolNonatt47$theta + nbSchoolNonatt47$SE.theta * 1.96
@@ -1148,7 +1155,7 @@ Negative binomial regression will be used, thus taking into account the skewed n
   alphaSchoolNonatt47
 #+end_src
 
-** Self-harm
+** Self-harm (and code for robust standard errors)
 To avoid including age groups in which self-harm is highly unlikely and ensure the same time between abuse and outcome for all participants, only children at the age of 7 at inclusion are included in the analysis. This gives 1711 subjects available for analysis. In this dataset, only 38 cases of self-harm is available, with a sufficient number of incidents in both cases and controls. Taking into account the low number of incidents, only gender, age and, as separation has been a sampling criterion, separation before inclusion will be adjusted for, and abuse will be a dichotomous variable. If the model fails to converge or presents with unreasonably wide confidence intervals because of power, an analysis without separation will be performed on cases and subjects from Kontrol2, the group drawn from the background population and thus not selected on separation status. Offset is the observed person time, stopping either at last draw of study data or when self-harm happens for the first time. 
 *** Analysis plans 
 
@@ -1161,17 +1168,46 @@ To avoid including age groups in which self-harm is highly unlikely and ensure t
 
 *** Code
 #+begin_src R :session data :results silent
-  nbSelfHarm <- glm.nb(selfHarm ~ childAbuseDicho + ageAtInclusion + gender + separationBeforeInclusion + offset(log(timeSinceInclusionSelfHarm)) , data = mergedAnalysis[ageAtInclusion >= 7])
-  summary(nbSelfHarm)
+  ## nbSelfHarm <- glm.nb(selfHarm ~ childAbuseDicho + ageAtInclusion + gender + separationBeforeInclusion + offset(log(timeSinceInclusionSelfHarm)) , data = mergedAnalysis[ageAtInclusion >= 7])
+  ## summary(nbSelfHarm)
   ##Warns that iteration limit is reached. Fitting Poisson regression instead:
   poSelfHarm <- glm(selfHarm ~ childAbuseDicho + ageAtInclusion + gender + separationBeforeInclusion + offset(log(timeSinceInclusionSelfHarm)) , family = poisson , data = mergedAnalysis[ageAtInclusion >= 7])
   summary(poSelfHarm)
-  ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogSelfHarm <- cbind(Estimate = coef(poSelfHarm) , confint(poSelfHarm))
-  ##The results in RR and with p-values:
-  exportSelfHarm <- cbind(exp(estLogSelfHarm) , coef(summary(poSelfHarm))[ , 4])
-  exportSelfHarm
+  ## ##Output given in natural logarithmic numbers. 
+  ## ##Calculating RR and confidence intervals:
+  ## estLogSelfHarm <- cbind(Estimate = coef(poSelfHarm) , confint(poSelfHarm))
+  ## ##The results in IRR and with p-values:
+  ## exportSelfHarm <- cbind(exp(estLogSelfHarm) , coef(summary(poSelfHarm))[ , 4])
+  ## exportSelfHarm
+
+  ##Addition due to reviewer comments - a reviewer has correctly stated that a negative binomial model is not appropriate for a binary outcome, and that is probably why this model fails. The reviewer has further asked why we choose Poisson, which we have defended as we wanted to estimate IRRs and not odds ratios. Furthermore, the reviewer has correctly questioned if we should use robust standard errors - we will change our analysis into this, code below:
+  ##This small function implements robust standard errors in results from poisson regression and negative binomial regression, that should deal with heteroscedasticity. The method for Poisson is derived from https://stats.oarc.ucla.edu/r/dae/poisson-regression/ (and other posts supporting my method), and the use of correction for degrees of freedom for negative binomial regression (using HC1 instead of HC0) is derived from "Object-oriented Computation of Sandwich Estimators" by Zeileis, and comments to the Stack Overflow question "Robust standard errors for negative binomial regression in R do not match those from Stata":
+  robustIRR <- function(regression , regressionType = "poisson") {
+      stdErr <- robustStandardErrors(regression , regressionType)
+      robustResults <- cbind(
+	  estimateIRR = exp(coef(regression)) ,
+	  robustLogSE = stdErr ,
+	  pValue = 2 * pnorm(abs(coef(regression)/stdErr) , lower.tail = FALSE) ,
+	  lowerLimitIRR = exp(coef(regression) - qnorm(0.975) * stdErr) ,
+	  upperLimitIRR = exp(coef(regression) + qnorm(0.975) * stdErr))
+      return(robustResults)
+  }
+
+  robustStandardErrors <- function(regression, regressionType) {
+      library(sandwich)
+      if (regressionType == "poisson") {
+	  cov <- vcovHC(regression , type = "HC0")
+      }
+      if (regressionType == "negativeBinomial") {
+	  cov <- vcovHC(regression , type = "HC1")
+      }
+      stdErr <- sqrt(diag(cov))
+      return(stdErr)
+  }
+
+  exportSelfHarm <- robustIRR(poSelfHarm)
+  write.csv(exportSelfHarm , "exportSelfHarm.csv")
+
 #+end_src
 ** Substance misuse
 For similar reasons as stated above for self-harm, only children at the age of 10 or more at inclusion are analysed here. There are 1399 observations in this subset with 112 cases of substance misuse, distributed acceptably across cases and controls. A grouped version of the abuse variable will be used, age at inclusion will be included as a continous variable and the model will be adjusted for mother's educational level as a dichotomized variable, gender and separation before inclusion. Offset is the observed person time, stopping either at last draw of study data or when substance misuse happens for the first time.
@@ -1194,12 +1230,14 @@ For similar reasons as stated above for self-harm, only children at the age of 1
   poSubstanceMisuse <- glm(substanceMisuse ~ tro_childabuse + ageAtInclusion + gender + motherEducLevelDicho + separationBeforeInclusion + offset(log(timeSinceInclusionSubstanceMisuse)) , family = poisson , data = mergedAnalysis[ageAtInclusion >=10 & timeSinceInclusionSubstanceMisuse > 0])
   summary(poSubstanceMisuse)
   ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogSubstanceMisuse <- cbind(Estimate = coef(poSubstanceMisuse) , confint(poSubstanceMisuse))
-  ##The results in RR and with p-values:
-  exportSubstanceMisuse <- cbind(exp(estLogSubstanceMisuse) , coef(summary(poSubstanceMisuse))[ , 4])
-  exportSubstanceMisuse
-
+  ## ##Calculating RR and confidence intervals:
+  ## estLogSubstanceMisuse <- cbind(Estimate = coef(poSubstanceMisuse) , confint(poSubstanceMisuse))
+  ## ##The results in IRR and with p-values:
+  ## exportSubstanceMisuse <- cbind(exp(estLogSubstanceMisuse) , coef(summary(poSubstanceMisuse))[ , 4])
+  ## exportSubstanceMisuse
+  ##See comment in self-harm - adding robust standard errors:
+  exportSubstanceMisuse <- robustIRR(poSubstanceMisuse)
+  write.csv(exportSubstanceMisuse , "exportSubstanceMisuse.csv")
 #+end_src
 ** Number of offspring
 There are 346 observations with number of offspring higher than zero. To avoid including a large number of children highly likely to not yet be pregnant, the analysis is restricted to only those who reach the age of 16 during the observation period, comprising 2078 individuals with 342 births. Additionally, the analysis is restricted to girls; boys could also be thought to make families at an early stage, but we did not have data on their partners, and such data are unlikely to exist in good quality as many underaged couples would not yet be registered in the public registries unless they are married, which requires special permissions in Denmark. To avoid large differences between the time between exposure and outcome, the analysis is stratified on age groups. The group of girls between 8 and 11 years at inclusion contain 382 children, 45 cases of abuse and 47 with offspring. This only allows for an analysis with the minimal set of covariates as used in the analysis of self-harm. The group of girls between 12 and 16 years contain 1053 children, 151 cases of child abuse and 292 with offspring. This allows for a more detailed analysis, using the available relevant control variables. 
@@ -1224,12 +1262,15 @@ For 12-16-year olds:
 #+begin_src R :session data :results silent
   nbNoOffspringGirls811 <- glm.nb(noOffspring ~ childAbuseDicho + separationBeforeInclusion + offset(log(timeSinceInclusionNoOffspring)) , data = mergedAnalysis[timeSinceInclusionNoOffspring >= 0 & ageAtInclusionGrouped == "8 - 11 years" & gender == "Female"])
   summary(nbNoOffspringGirls811)
-  ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogNoOffspringGirls811 <- cbind(Estimate = coef(nbNoOffspringGirls811) , confint(nbNoOffspringGirls811))
-  ##The results in RR and with p-values:
-  exportNoOffspringGirls811 <- cbind(exp(estLogNoOffspringGirls811) , coef(summary(nbNoOffspringGirls811))[ , 4])
-  exportNoOffspringGirls811
+  ## ##Output given in natural logarithmic numbers. 
+  ## ##Calculating RR and confidence intervals:
+  ## estLogNoOffspringGirls811 <- cbind(Estimate = coef(nbNoOffspringGirls811) , confint(nbNoOffspringGirls811))
+  ## ##The results in RR and with p-values:
+  ## exportNoOffspringGirls811 <- cbind(exp(estLogNoOffspringGirls811) , coef(summary(nbNoOffspringGirls811))[ , 4])
+  ## exportNoOffspringGirls811
+  ##Using robust standard errors:
+  exportNoOffspringGirls811 <- robustIRR(nbNoOffspringGirls811 , regressionType = "negativeBinomial")
+  write.csv(exportNoOffspringGirls811 , "exportNoOffspringGirls811.csv")
   ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
   lci <- nbNoOffspringGirls811$theta - nbNoOffspringGirls811$SE.theta * 1.96
   uci <- nbNoOffspringGirls811$theta + nbNoOffspringGirls811$SE.theta * 1.96
@@ -1239,12 +1280,15 @@ For 12-16-year olds:
 
   nbNoOffspringGirls1216 <- glm.nb(noOffspring ~ tro_childabuse + motherEducLevel + separationBeforeInclusion + offset(log(timeSinceInclusionNoOffspring)), data = mergedAnalysis[timeSinceInclusionNoOffspring >= 0 & ageAtInclusionGrouped == "12 - 16 years" & gender == "Female"])
   summary(nbNoOffspringGirls1216)
-  ##Output given in natural logarithmic numbers. 
-  ##Calculating RR and confidence intervals:
-  estLogNoOffspringGirls1216 <- cbind(Estimate = coef(nbNoOffspringGirls1216) , confint(nbNoOffspringGirls1216))
-  ##The results in RR and with p-values:
-  exportNoOffspringGirls1216 <- cbind(exp(estLogNoOffspringGirls1216) , coef(summary(nbNoOffspringGirls1216))[ , 4])
-  exportNoOffspringGirls1216
+  ## ##Output given in natural logarithmic numbers. 
+  ## ##Calculating RR and confidence intervals:
+  ## estLogNoOffspringGirls1216 <- cbind(Estimate = coef(nbNoOffspringGirls1216) , confint(nbNoOffspringGirls1216))
+  ## ##The results in RR and with p-values:
+  ## exportNoOffspringGirls1216 <- cbind(exp(estLogNoOffspringGirls1216) , coef(summary(nbNoOffspringGirls1216))[ , 4])
+  ## exportNoOffspringGirls1216
+  ##Using robust standard errors:
+  exportNoOffspringGirls1216 <- robustIRR(nbNoOffspringGirls1216 , regressionType = "negativeBinomial")
+  write.csv(exportNoOffspringGirls1216 , "exportNoOffspringGirls1216.csv")
   ##Converting theta to alpha(known from Stata) and producing corresponding CIs:
   lci <- nbNoOffspringGirls1216$theta - nbNoOffspringGirls1216$SE.theta * 1.96
   uci <- nbNoOffspringGirls1216$theta + nbNoOffspringGirls1216$SE.theta * 1.96
@@ -1281,6 +1325,35 @@ For 12-16-year olds:
 * Overview tables and some missing numbers, following up for article
 #+begin_src R :session data :results output :exports both
   ##Table for demographics
+  ageCategory <- function(ageCategory) {
+      ageCategoryStatistics <- c(
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 gender == "Male" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 gender == "Female" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 motherEducLevel == "Less than primary or missing data" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 motherEducLevel == "Primary level" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 motherEducLevel == "Secondary level" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 separationBeforeInclusion == "No separation of parents" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 separationBeforeInclusion == "Separation of parents" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 childAbuseDicho == "Child abuse" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 tro_childabuse == "Physical abuse" , .N] , 
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 tro_childabuse == "Sexual abuse" , .N] ,
+	  mergedAnalysis[ageAtInclusionGrouped == ageCategory &
+			 tro_childabuse == "Multiple types of abuse" , .N])
+      return(ageCategoryStatistics)
+  }
+
   temp <- data.table(categoryNames = c("Male" ,
 				       "Female" ,
 				       "Less than primary or missing data" ,
@@ -1288,75 +1361,15 @@ For 12-16-year olds:
 				       "Secondary level" ,
 				       "Higher certificate, degree level or higher" ,
 				       "No separation of parents" ,
-				       "Separation of parents") ,
-		     zeroToThree = c(
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					gender == "Male" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					gender == "Female" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					motherEducLevel == "Less than primary or missing data" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					motherEducLevel == "Primary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					motherEducLevel == "Secondary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					separationBeforeInclusion == "No separation of parents" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "0 - 3 years" &
-					separationBeforeInclusion == "Separation of parents" , .N]) ,
-		     fourToSeven = c(
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					gender == "Male" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					gender == "Female" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					motherEducLevel == "Less than primary or missing data" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					motherEducLevel == "Primary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					motherEducLevel == "Secondary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					separationBeforeInclusion == "No separation of parents" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "4 - 7 years" &
-					separationBeforeInclusion == "Separation of parents" , .N]) ,
-		     eightToEleven = c(
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					gender == "Male" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					gender == "Female" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					motherEducLevel == "Less than primary or missing data" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					motherEducLevel == "Primary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					motherEducLevel == "Secondary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					separationBeforeInclusion == "No separation of parents" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-					separationBeforeInclusion == "Separation of parents" , .N]) ,
-		     twelveToSixteen = c(
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					gender == "Male" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					gender == "Female" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					motherEducLevel == "Less than primary or missing data" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					motherEducLevel == "Primary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					motherEducLevel == "Secondary level" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					motherEducLevel == "Higher certificate, degree level or higher" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					separationBeforeInclusion == "No separation of parents" , .N] ,
-			 mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-					separationBeforeInclusion == "Separation of parents" , .N]))
+				       "Separation of parents" ,
+				       "Suspected child abuse" ,
+				       "Suspected physical abuse" ,
+				       "Suspected sexual abuse" ,
+				       "Suspected multiple types of abuse") ,
+		     zeroToThree = ageCategory("0 - 3 years") ,
+		     fourToSeven = ageCategory("4 - 7 years") ,
+		     eightToEleven = ageCategory("8 - 11 years") ,
+		     twelveToSixteen = ageCategory("12 - 16 years"))
   fwrite(temp , "countsTable1.csv")
 
   ##The histogram of the counts of non-attendance looks strange - I looked back into the code and this seems to originate from the way non-attendance is registered. This is monthly registrations from the schools - it makes sense that most children have a set number of full years, and that some are excluded or included in the school system at some point.
@@ -1420,14 +1433,14 @@ For 12-16-year olds:
 								  !is.na(SchoolNonatt) &
 								  timeSinceInclusionSchoolNonatt > 0 ,
 								  median(timeSinceInclusionSchoolNonatt , type = 7)] ,
-				      mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
-						     timeSinceInclusionNoOffspring > 0 &
-						     gender == "Female" ,
-						     median(timeSinceInclusionNoOffspring , type = 7)] ,
-				      mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
-						     timeSinceInclusionNoOffspring > 0 &
-						     gender == "Female" ,
-						     median(timeSinceInclusionNoOffspring , type = 7)]))
+						   mergedAnalysis[ageAtInclusionGrouped == "8 - 11 years" &
+								  timeSinceInclusionNoOffspring > 0 &
+								  gender == "Female" ,
+								  median(timeSinceInclusionNoOffspring , type = 7)] ,
+						   mergedAnalysis[ageAtInclusionGrouped == "12 - 16 years" &
+								  timeSinceInclusionNoOffspring > 0 &
+								  gender == "Female" ,
+								  median(timeSinceInclusionNoOffspring , type = 7)]))
   fwrite(temp , "participantsCasesAndMedians.csv")
 
   ##Table of missings in school non-attendance data:
